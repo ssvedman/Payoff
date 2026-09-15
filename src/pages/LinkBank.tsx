@@ -11,6 +11,8 @@ import {
   mapAccount,
   createCheckingAccount,
   pollLink,
+  searchInstitutions,
+  type InstitutionHit,
   type LinkStatus,
   type PlaidAccountSummary,
 } from '../lib/plaidLink'
@@ -112,6 +114,36 @@ export default function LinkBank() {
   }, [found, suggestions])
 
   const remaining = status ? status.itemCap - status.itemsUsed : null
+
+  /**
+   * Look a bank up before committing one of a fixed number of connections.
+   *
+   * The costly mistake is starting a link against a bank that cannot be reached:
+   * the connection is spent the moment the bank login succeeds, well before it
+   * becomes clear no usable account will be offered. Searching costs nothing.
+   *
+   * It also settles the question that actually catches people out — a store card
+   * is listed under the SHOP's name, not the bank that issues it, so searching
+   * for the issuer finds nothing and the card looks unreachable when it is not.
+   */
+  const [probe, setProbe] = useState('')
+  const [hits, setHits] = useState<InstitutionHit[] | null>(null)
+  const [probing, setProbing] = useState(false)
+
+  async function runProbe() {
+    const q = probe.trim()
+    if (q.length < 2) return
+    setProbing(true)
+    setHits(null)
+    try {
+      const res = await searchInstitutions(q)
+      setHits(res.institutions)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setProbing(false)
+    }
+  }
 
   async function beginLink() {
     setError(null)
@@ -317,6 +349,66 @@ export default function LinkBank() {
               <div style={{ marginTop: 6 }}>
                 Reconnecting one of these does not use up another connection.
               </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ---- check a bank before spending a connection ---- */}
+      {phase === 'idle' && (
+        <div className="card-panel" style={{ marginBottom: 18 }}>
+          <div className="sm" style={{ fontWeight: 700, marginBottom: 3 }}>
+            Check a bank first
+          </div>
+          <div className="tiny muted" style={{ marginBottom: 9, lineHeight: 1.5 }}>
+            Looking a bank up costs nothing. Starting a connection to one that
+            cannot be reached spends it anyway. Store cards are listed under the
+            shop's name, not the bank behind them.
+          </div>
+          <div style={{ display: 'flex', gap: 7 }}>
+            <input
+              value={probe}
+              onChange={(e) => setProbe(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void runProbe()
+              }}
+              placeholder="Name on the card or statement"
+              aria-label="Bank or card name to look up"
+              style={{ flex: 1, padding: 10, fontSize: 14 }}
+            />
+            <button
+              className="btn ghost"
+              style={{ width: 'auto', padding: '0 14px' }}
+              disabled={probing || probe.trim().length < 2}
+              onClick={() => void runProbe()}
+            >
+              {probing ? '…' : 'Look up'}
+            </button>
+          </div>
+
+          {hits !== null && (
+            <div className="tiny" style={{ marginTop: 9, lineHeight: 1.6 }}>
+              {hits.length === 0 ? (
+                <span className="muted">
+                  Nothing found. Try the name printed on the card rather than the
+                  bank that issues it.
+                </span>
+              ) : (
+                <>
+                  <div className="muted" style={{ marginBottom: 4 }}>
+                    Found {hits.length === 10 ? '10+' : hits.length}. Use the exact
+                    name when connecting:
+                  </div>
+                  {hits.map((h) => (
+                    <div key={h.institution_id} style={{ marginBottom: 2 }}>
+                      <strong>{h.name}</strong>
+                      {h.oauth ? (
+                        <span className="muted"> · signs in on the bank's own page</span>
+                      ) : null}
+                    </div>
+                  ))}
+                </>
+              )}
             </div>
           )}
         </div>
