@@ -165,7 +165,13 @@ Deno.serve(async (req: Request) => {
           // seeded APR and minimum.
           products: ['transactions'],
           optional_products: ['liabilities'],
-          transactions: { days_requested: 180 },
+          // 730 is Plaid's maximum. It only applies at link time and cannot be
+          // widened later, so ask for everything up front — the six months the
+          // first items were created with is all those items will ever have, and
+          // nothing before it can be recovered. Supabase keeps what arrives
+          // permanently (sync deletes only on Plaid's explicit removed[]), so the
+          // record only ever grows from here.
+          transactions: { days_requested: 730 },
         }
         if (useHosted) payload.hosted_link = {}
 

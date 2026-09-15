@@ -46,10 +46,51 @@ export default function Activity() {
   const [pastTxns, setPastTxns] = useState<Transaction[] | null>(null)
   const [loadingMonth, setLoadingMonth] = useState(false)
 
+  /**
+   * The oldest month there is anything to show.
+   *
+   * Plaid only hands over a fixed window at link time, so the record starts where
+   * the first item's window started and nothing exists before it. Paging back into
+   * those months returns "No transactions", which reads as a fault rather than as
+   * the edge of the record. Read it from the data rather than hard-coding a date:
+   * every nightly sync appends, so the floor moves back on its own as older items
+   * are linked, and never forward — rows are only ever deleted on Plaid's explicit
+   * removed[] (a pending charge superseded by its posted twin), never by ageing.
+   */
+  const [earliest, setEarliest] = useState<Date | null>(null)
+
+  useEffect(() => {
+    let active = true
+    void (async () => {
+      const { data } = await supabase
+        .from('transactions')
+        .select('posted_on')
+        .order('posted_on', { ascending: true })
+        .limit(1)
+      if (!active) return
+      const iso = (data ?? [])[0]?.posted_on
+      if (!iso) return
+      const [y, m] = String(iso).split('-').map(Number)
+      setEarliest(new Date(y, m - 1, 1))
+    })()
+    return () => {
+      active = false
+    }
+  }, [])
+
   const thisMonth = useMemo(() => {
     const n = new Date()
     return anchor.getFullYear() === n.getFullYear() && anchor.getMonth() === n.getMonth()
   }, [anchor])
+
+  /** At the oldest recorded month, so there is nothing further back to show. */
+  const atEarliest = useMemo(
+    () =>
+      earliest !== null &&
+      anchor.getFullYear() === earliest.getFullYear() &&
+      anchor.getMonth() === earliest.getMonth(),
+    [anchor, earliest],
+  )
 
   const monthBounds = useMemo(() => {
     const from = isoDate(new Date(anchor.getFullYear(), anchor.getMonth(), 1))
@@ -206,7 +247,8 @@ export default function Activity() {
 
       {/* Month switcher. Forward is disabled at the current month — there is
           nothing recorded ahead of today, and an empty future month reads as a
-          fault rather than as the calendar. */}
+          fault rather than as the calendar. Back is disabled at the oldest month
+          on record, for the same reason in the other direction. */}
       <div
         style={{
           display: 'flex',
@@ -220,8 +262,9 @@ export default function Activity() {
         <button
           type="button"
           className="btn ghost"
-          style={{ width: 'auto', padding: '6px 12px', fontSize: 13 }}
+          style={{ width: 'auto', padding: '6px 12px', fontSize: 13, opacity: atEarliest ? 0.35 : 1 }}
           aria-label="Previous month"
+          disabled={atEarliest}
           onClick={() => setAnchor((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))}
         >
           ‹
