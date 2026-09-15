@@ -25,6 +25,7 @@ export type AlertType =
   | 'business_low'
   | 'account_cleared'
   | 'balance_stale'
+  | 'account_dormant'
   | 'item_login_required'
   | 'monthly_summary'
 

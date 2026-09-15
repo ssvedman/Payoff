@@ -205,8 +205,16 @@ Deno.serve(async (req: Request) => {
   const open = withBalance.filter((a) => !isCleared(a))
   const target = open[0] ?? null
 
-  // ---------- balance_up: a NON-TARGET account's balance rose ----------
+  // ---------- balance_up: a NON-TARGET CARD's balance rose ----------
+  //
+  // Cards only. This alert exists to catch spending on an account that is
+  // supposed to be dormant — that is its whole purpose, and its own setting says
+  // so. A loan or a tax debt cannot be spent on: its balance moves because
+  // interest accrued, or because the debt came into existence, and reporting
+  // either as though somebody had gone shopping is simply wrong. An instalment
+  // loan appearing at origination read as a fifty-thousand-dollar shopping trip.
   for (const a of withBalance) {
+    if (a.kind !== 'card') continue
     if (target && a.id === target.id) continue
     if (a.prev === null) continue
     const delta = a.balance - a.prev
@@ -316,6 +324,47 @@ Deno.serve(async (req: Request) => {
         title: 'Balance needs updating',
         body: `${a.name} was last updated ${age} days ago. Anything worked out from it is that old too.`,
         dedupe: `balance_stale:${a.id}:${now.year}-${now.month}`,
+      })
+    }
+  }
+
+  // ---------- account_dormant: a card unused long enough to be at risk ----------
+  //
+  // Issuers close cards that go unused, and a closed card removes its credit
+  // limit from the total available — which raises utilisation across every other
+  // card at once, without anybody having spent a penny. A paid-off card sitting
+  // at zero is the most useful one to keep open and the easiest to forget.
+  //
+  // Only cards that are CONNECTED: judging dormancy needs a transaction feed, and
+  // a hand-maintained card has none. Silence there means no data, not no use.
+  const DORMANT_DAYS = 180
+
+  const { data: lastActivity } = await admin
+    .from('transactions')
+    .select('account_id, posted_on')
+    .order('posted_on', { ascending: false })
+
+  const lastSeen = new Map<string, string>()
+  for (const t of lastActivity ?? []) {
+    const id = t.account_id as string
+    if (!lastSeen.has(id)) lastSeen.set(id, t.posted_on as string)
+  }
+
+  for (const a of withBalance) {
+    if (a.kind !== 'card') continue
+    if (!a.plaid_account_id) continue
+
+    const seen = lastSeen.get(a.id as string)
+    const days = seen
+      ? Math.round((Date.parse(`${now.iso}T00:00:00Z`) - Date.parse(`${seen}T00:00:00Z`)) / 86400000)
+      : null
+
+    if (days !== null && days >= DORMANT_DAYS) {
+      alerts.push({
+        type: 'account_dormant',
+        title: 'Card has gone unused',
+        body: `Nothing has been charged to ${a.name} in ${days} days. Issuers sometimes close an account after a long spell of no use, and a closed card takes its credit limit with it.`,
+        dedupe: `account_dormant:${a.id}:${now.year}-${now.month}`,
       })
     }
   }
