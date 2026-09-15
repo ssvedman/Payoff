@@ -66,6 +66,12 @@ const ALERTS: Alert[] = [
     defaultOn: true,
   },
   {
+    type: 'account_dormant',
+    title: 'A card has gone unused',
+    subtitle: 'Unused cards get closed, and that raises utilization',
+    defaultOn: true,
+  },
+  {
     type: 'monthly_summary',
     title: 'Monthly summary',
     subtitle: 'First of the month',
