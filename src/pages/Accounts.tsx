@@ -55,12 +55,17 @@ export default function Accounts() {
   const [problem, setProblem] = useState<string | null>(null)
 
   const synced = useMemo(
-    () => accounts.filter((a) => !a.is_manual).sort(byPayoffOrder),
+    // "Synced" means a bank is actually attached — not merely that the account was
+    // seeded with the intention of syncing one day. is_manual records intent; an
+    // account with no plaid_account_id is showing a figure somebody typed,
+    // whatever the intent was, and listing it as synced implies a live balance
+    // that does not exist.
+    () => accounts.filter((a) => a.plaid_account_id).sort(byPayoffOrder),
     [accounts],
   )
 
   const manual = useMemo(
-    () => accounts.filter((a) => a.is_manual).sort(byPayoffOrder),
+    () => accounts.filter((a) => !a.plaid_account_id).sort(byPayoffOrder),
     [accounts],
   )
 
@@ -84,7 +89,7 @@ export default function Accounts() {
    */
   const lastManual = useMemo(() => {
     return accounts
-      .filter((a) => a.is_manual && a.balanceSource === 'manual' && a.balanceUpdatedAt)
+      .filter((a) => !a.plaid_account_id && a.balanceSource === 'manual' && a.balanceUpdatedAt)
       .sort((a, b) => ((a.balanceUpdatedAt ?? '') < (b.balanceUpdatedAt ?? '') ? 1 : -1))[0]
   }, [accounts])
 

@@ -71,6 +71,16 @@ export default function Activity() {
     [budgetLines],
   )
 
+  /**
+   * `lineId` is deliberately three-valued:
+   *   undefined — leave the budget line exactly as it is
+   *   null      — clear it
+   *   a string  — set it
+   *
+   * The distinction matters. An earlier version wrote `lineId ?? null`, so simply
+   * re-tapping the bucket a transaction was already in silently erased its line —
+   * changing a label destroyed data the user never touched.
+   */
   async function choose(t: Transaction, chosen: Bucket, lineId?: string | null) {
     setSaving(true)
     setSaveError(null)
@@ -85,8 +95,9 @@ export default function Activity() {
           match_text: text,
           bucket: chosen,
           // A rule pins the line as well, so correcting one coffee shop teaches
-          // every future one rather than just this row.
-          budget_line_id: lineId ?? null,
+          // every future one rather than just this row. Left untouched when no
+          // line was part of this choice.
+          ...(lineId === undefined ? {} : { budget_line_id: lineId }),
           created_by: user?.id ?? null,
         }
         const { error: ruleError } = await supabase
@@ -99,7 +110,7 @@ export default function Activity() {
       const manual: Partial<TransactionRow> = {
         bucket: chosen,
         bucket_source: 'manual',
-        budget_line_id: lineId ?? null,
+        ...(lineId === undefined ? {} : { budget_line_id: lineId }),
       }
       const { error: txError } = await supabase
         .from('transactions')
@@ -117,7 +128,7 @@ export default function Activity() {
         const byRule: Partial<TransactionRow> = {
           bucket: chosen,
           bucket_source: 'rule',
-          budget_line_id: lineId ?? null,
+          ...(lineId === undefined ? {} : { budget_line_id: lineId }),
         }
         const { error: bulkError } = await supabase
           .from('transactions')
@@ -273,10 +284,10 @@ export default function Activity() {
                                   className="pill"
                                   disabled={saving}
                                   onClick={() =>
-                                    // Changing bucket clears the line, since a line
-                                    // belongs to exactly one bucket. Re-picking the
-                                    // same bucket keeps it.
-                                    void choose(t, b.key, b.key === t.bucket ? t.budget_line_id : null)
+                                    // A line belongs to exactly one bucket, so a real
+                                    // bucket change clears it. Re-tapping the bucket it
+                                    // is already in leaves the line untouched.
+                                    void choose(t, b.key, b.key === t.bucket ? undefined : null)
                                   }
                                   style={{
                                     background: b.bg,
