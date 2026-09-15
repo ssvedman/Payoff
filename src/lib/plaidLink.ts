@@ -135,3 +135,37 @@ export const createCheckingAccount = (
     owner: opts.owner ?? 'joint',
     institution: opts.institution?.trim(),
   })
+
+/**
+ * Ask for a fresh pull, now.
+ *
+ * The nightly job is the only thing that moved the data, so a card paid at 9pm
+ * left the app disagreeing with the bank all evening — which is exactly when
+ * somebody starts wondering whether it is broken. The `sync` function already
+ * accepts a household member's own token; it simply had no caller from the app.
+ */
+export async function syncNow(): Promise<{ ok: boolean; message: string }> {
+  const { data } = await supabase.auth.getSession()
+  const token = data.session?.access_token
+  if (!token) return { ok: false, message: 'Not signed in.' }
+
+  try {
+    const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/sync`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ triggeredBy: 'manual' }),
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok) return { ok: false, message: body.error ?? `Update failed (${res.status})` }
+
+    const errs = (body.errors ?? []) as string[]
+    if (errs.length) return { ok: true, message: `Updated, but ${errs.length} connection had trouble.` }
+    return { ok: true, message: 'Up to date.' }
+  } catch {
+    return { ok: false, message: 'Could not reach the server.' }
+  }
+}

@@ -97,3 +97,35 @@ export function dayHeading(dateStr: string, today = new Date()): string {
   if (diff === 1) return 'YESTERDAY'
   return d.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short' }).toUpperCase()
 }
+
+
+/**
+ * The rate line for a debt.
+ *
+ * A null APR is not the same fact on every kind of account. On the tax debt it
+ * genuinely is a payment plan with no rate; on a CARD it means the issuer did not
+ * report one this cycle — and printing "payment plan" against a credit card both
+ * misdescribes it and quietly implies it is not accruing interest.
+ */
+export function rateLabel(a: { apr: number | null; kind: string }): string {
+  if (a.apr !== null) return apr(a.apr) ?? ''
+  return a.kind === 'tax' ? 'payment plan' : 'rate not reported'
+}
+
+/** "due in 3 days" / "due today" / "6 days overdue". Null when nothing is known. */
+export function dueLabel(iso: string | null): string | null {
+  if (!iso) return null
+  const [y, m, d] = iso.split('-').map(Number)
+  if (!y || !m || !d) return null
+  const due = new Date(y, m - 1, d)
+  const today = new Date()
+  const days = Math.round(
+    (due.getTime() - new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()) /
+      86400000,
+  )
+  if (days === 0) return 'due today'
+  if (days === 1) return 'due tomorrow'
+  if (days > 0) return `due in ${days} days`
+  if (days === -1) return '1 day overdue'
+  return `${Math.abs(days)} days overdue`
+}

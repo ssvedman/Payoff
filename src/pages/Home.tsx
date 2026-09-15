@@ -2,31 +2,67 @@ import { useMemo, useState } from 'react'
 import Bar from '../components/Bar'
 import { useData, usePayoffPlan, useMonthTotals } from '../lib/data'
 import { useNavigate } from 'react-router-dom'
-import { apr, money, accountLabel, parseDateOnly, relativeTime } from '../lib/format'
-import { monthNumber, totalPlanMonths } from '../lib/avalanche'
+import { money, accountLabel, parseDateOnly, relativeTime, rateLabel, dueLabel } from '../lib/format'
+import { monthNumber, totalPlanMonths, projectedFinishDate } from '../lib/avalanche'
+import { syncNow } from '../lib/plaidLink'
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n))
 
-/** Sub-line under a debt name: rate and owner, or the IRS payment plan. */
-/** The owner now leads the account name, so it is not repeated here. */
-function rateLine(rate: number | null): string {
-  return rate === null ? 'payment plan' : `${apr(rate)}`
+/**
+ * Sub-line under a debt name. The owner leads the name, so it is not repeated
+ * here; what earns the space instead is when the thing is due.
+ */
+function subLine(d: { apr: number | null; kind: string; next_due_on: string | null }): string {
+  return [rateLabel(d), dueLabel(d.next_due_on)].filter(Boolean).join(' · ')
 }
 
-function Header({ syncedAt }: { syncedAt: string | null }) {
+/**
+ * The freshness line doubles as the refresh control. Tapping it asks for a pull
+ * now rather than waiting for the nightly one — the state it reports is also the
+ * state you would want to change, so the two belong on the same word.
+ */
+function Header({
+  syncedAt,
+  onRefresh,
+  busy,
+  note,
+}: {
+  syncedAt: string | null
+  onRefresh: () => void
+  busy: boolean
+  note: string | null
+}) {
   return (
-    <div
-      style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 18,
-      }}
-    >
-      <span style={{ fontWeight: 700, fontSize: 16 }}>Payoff</span>
-      <span className="tiny muted">
-        {syncedAt ? `synced ${relativeTime(syncedAt)}` : 'not synced yet'}
-      </span>
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontWeight: 700, fontSize: 16 }}>Payoff</span>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={busy}
+          className="tiny muted"
+          aria-label="Check the banks for anything new"
+          style={{
+            background: 'none',
+            border: 'none',
+            padding: 0,
+            font: 'inherit',
+            cursor: busy ? 'default' : 'pointer',
+            textDecoration: busy ? 'none' : 'underline',
+          }}
+        >
+          {busy
+            ? 'checking…'
+            : syncedAt
+              ? `synced ${relativeTime(syncedAt)}`
+              : 'not synced yet'}
+        </button>
+      </div>
+      {note && (
+        <div className="tiny muted" style={{ textAlign: 'right', marginTop: 3 }}>
+          {note}
+        </div>
+      )}
     </div>
   )
 }
@@ -81,7 +117,19 @@ export default function Home() {
    * of the work done, not something to hide.
    */
   const [showCleared, setShowCleared] = useState(false)
-  const { loading, error, debts, lastSyncedAt, progress } = useData()
+  const { loading, error, debts, lastSyncedAt, progress, refresh } = useData()
+  const [syncing, setSyncing] = useState(false)
+  const [syncNote, setSyncNote] = useState<string | null>(null)
+
+  async function refreshNow() {
+    setSyncing(true)
+    setSyncNote(null)
+    const res = await syncNow()
+    // Re-read regardless: a partial pull still moved something.
+    await refresh()
+    setSyncNote(res.message)
+    setSyncing(false)
+  }
   const plan = usePayoffPlan()
   const totals = useMonthTotals()
 
@@ -126,7 +174,7 @@ export default function Home() {
   if (!plan) {
     return (
       <div className="page">
-        <Header syncedAt={lastSyncedAt} />
+        <Header syncedAt={lastSyncedAt} onRefresh={() => void refreshNow()} busy={syncing} note={syncNote} />
         <div className="banner banner--red">
           <div className="sm" style={{ fontWeight: 700, color: 'var(--red-tx)' }}>
             {error ? 'Data did not load' : 'No plan settings on record'}
@@ -188,13 +236,16 @@ export default function Home() {
   const savingsPct = pacedTarget > 0 ? clamp01(plan.savingsBalance / pacedTarget) : 0
   const savingsAhead = plan.savingsBalance - pacedTarget
 
+  const finish = projectedFinishDate(plan.sim.months)
+  const finishLabel = finish.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+
   const clearedDebts = debts.filter((d) => d.balance <= 0 || d.cleared_at !== null)
   const activeDebts = debts.filter((d) => !(d.balance <= 0 || d.cleared_at !== null))
   const shownDebts = showCleared ? debts : activeDebts
 
   return (
     <div className="page">
-      <Header syncedAt={lastSyncedAt} />
+      <Header syncedAt={lastSyncedAt} onRefresh={() => void refreshNow()} busy={syncing} note={syncNote} />
 
       {error && (
         <div className="banner banner--red" style={{ marginBottom: 18 }}>
@@ -227,6 +278,27 @@ export default function Home() {
 
       <div style={{ marginBottom: 20 }}>
         <Bar pct={plan.progress} color="var(--green)" />
+
+        {/* The simulation already computed all of this; none of it was ever shown.
+            A finish date is the question the whole plan exists to answer, and the
+            interest figure is what the ordering is FOR — putting the highest rate
+            first is only worth doing if you can see what it saves. `stalled`
+            means the payments do not cover the interest, which must never be
+            reported as a date. */}
+        <div className="tiny muted tnum" style={{ marginTop: 7, lineHeight: 1.6 }}>
+          {plan.sim.stalled ? (
+            <span style={{ color: 'var(--red)' }}>
+              At the current payment the balances do not come down — the interest
+              is larger than what is going to it.
+            </span>
+          ) : plan.sim.months > 0 ? (
+            <>
+              Clear by {finishLabel} · {money(plan.sim.totalInterest)} interest from here
+            </>
+          ) : (
+            'Every account is clear.'
+          )}
+        </div>
 
         <button
           type="button"
@@ -268,8 +340,8 @@ export default function Home() {
           </div>
 
           <div className="tnum" style={{ fontSize: 13, color: '#9DA9B8', marginTop: 4 }}>
-            {target.apr === null ? 'payment plan' : apr(target.apr)} · {money(plan.attackFund)} above
-            the {money(targetMin)} minimum
+            {rateLabel(target)} · {money(plan.attackFund)} above the {money(targetMin)} minimum
+            {dueLabel(target.next_due_on) ? ` · ${dueLabel(target.next_due_on)}` : ''}
           </div>
 
           <div style={{ marginTop: 11 }}>
@@ -373,7 +445,7 @@ export default function Home() {
                   ) : (
                     <div className="sm">{accountLabel(d)}</div>
                   )}
-                  <div className="tiny muted tnum">{rateLine(d.apr)}</div>
+                  <div className="tiny muted tnum">{subLine(d)}</div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
                   <div
