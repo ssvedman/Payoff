@@ -31,6 +31,18 @@ export default function SignIn() {
   const location = useLocation()
   const notice = (location.state as { notice?: string } | null)?.notice ?? null
 
+  // Set by main.tsx when a sign-in link came back with an error. Read once, then
+  // clear, so it does not reappear on the next visit.
+  const [linkError] = useState<string | null>(() => {
+    try {
+      const v = sessionStorage.getItem('payoff.linkError')
+      if (v) sessionStorage.removeItem('payoff.linkError')
+      return v
+    } catch {
+      return null
+    }
+  })
+
   // Authenticated, but absent from household_members. Say only that.
   if (session && !isMember) {
     return (
@@ -131,6 +143,23 @@ export default function SignIn() {
           {sending ? 'Sending…' : 'Send sign-in link'}
         </button>
       </form>
+
+      {linkError === 'stale' && (
+        <div
+          className="tiny"
+          style={{ color: 'var(--red-tx)', marginTop: 12, lineHeight: 1.6 }}
+          role="status"
+        >
+          That link had already been used, or a newer one replaced it. Each sign-in
+          link works once. Request one below, then open the most recent email.
+        </div>
+      )}
+
+      {linkError === 'generic' && (
+        <div className="tiny muted" style={{ marginTop: 12, lineHeight: 1.6 }}>
+          That sign-in link could not be completed. Request a new one below.
+        </div>
+      )}
 
       {notice === 'exchange-failed' && (
         <div className="tiny muted" style={{ marginTop: 12, lineHeight: 1.6 }}>
