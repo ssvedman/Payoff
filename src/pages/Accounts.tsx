@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useData, type Account } from '../lib/data'
 import { useAuth } from '../lib/auth'
 import { supabase } from '../lib/supabase'
-import { isoDate, money, moneyCents, minimum, accountLabel, relativeTime, rateLabel, dueLabel } from '../lib/format'
+import { isoDate, money, moneyCents, minimum, accountLabel, relativeTime, rateLabel, dueLabel, ownerLabel } from '../lib/format'
 
 /**
  * /accounts — BUILD.md §7.
@@ -217,6 +217,12 @@ export default function Accounts() {
   // placeholders there would read as a fault rather than a save.
   const showSkeleton = loading && accounts.length === 0
 
+  /** Read off the data, so the owner CHECK constraint is never guessed at. */
+  const owners = useMemo(
+    () => Array.from(new Set(accounts.map((a) => a.owner))).sort(),
+    [accounts],
+  )
+
   return (
     <div className="page">
       <div style={{ fontWeight: 700, fontSize: 20, marginBottom: 4 }}>Accounts</div>
@@ -252,6 +258,8 @@ export default function Accounts() {
         <button className="btn" onClick={() => navigate('/link')}>
           Connect a bank
         </button>
+
+        <AddDebt owners={owners} onAdded={() => void refresh()} />
       </div>
 
       {error && (
@@ -438,6 +446,150 @@ function SkeletonRows({ count }: { count: number }) {
           <div className="skeleton" style={{ height: 13, width: 78 }} />
         </div>
       ))}
+    </div>
+  )
+}
+
+/**
+ * Add a debt no bank feed reaches.
+ *
+ * Store cards are the case this exists for: no aggregator covers them, so the
+ * only way they enter the plan is by hand — and until now the only way an
+ * account could be created at all was by linking a bank, which is precisely the
+ * thing these cards do not support.
+ *
+ * The payoff position is not asked for. Avalanche order follows the rate, and
+ * the database renumbers the whole queue on insert.
+ */
+function AddDebt({ owners, onAdded }: { owners: string[]; onAdded: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [name, setName] = useState('')
+  const [owner, setOwner] = useState(owners[0] ?? 'joint')
+  const [kind, setKind] = useState<'card' | 'loan' | 'tax'>('card')
+  const [typeLabel, setTypeLabel] = useState('')
+  const [institution, setInstitution] = useState('')
+  const [balance, setBalance] = useState('')
+  const [rate, setRate] = useState('')
+  const [minimum, setMinimum] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  const num = (v: string) => {
+    const n = Number(v.replace(/[^0-9.-]/g, ''))
+    return Number.isFinite(n) ? n : null
+  }
+
+  const balanceNum = num(balance)
+  const canSave = name.trim().length > 0 && balanceNum !== null && balanceNum >= 0 && !busy
+
+  async function save() {
+    if (!canSave) return
+    setBusy(true)
+    setErr(null)
+    const { error } = await supabase.rpc('add_manual_debt', {
+      p_name: name.trim(),
+      p_owner: owner,
+      p_kind: kind,
+      p_balance: balanceNum,
+      p_apr: rate.trim() === '' ? null : num(rate),
+      p_minimum: minimum.trim() === '' ? 0 : (num(minimum) ?? 0),
+      p_type_label: typeLabel.trim() || null,
+      p_institution: institution.trim() || null,
+    })
+    setBusy(false)
+    if (error) {
+      setErr(error.message)
+      return
+    }
+    setName(''); setTypeLabel(''); setInstitution('')
+    setBalance(''); setRate(''); setMinimum('')
+    setOpen(false)
+    onAdded()
+  }
+
+  const field = { width: '100%', padding: 10, fontSize: 14, marginTop: 4 } as const
+
+  if (!open) {
+    return (
+      <button className="btn ghost" style={{ marginTop: 10 }} onClick={() => setOpen(true)}>
+        Add an account by hand
+      </button>
+    )
+  }
+
+  return (
+    <div style={{ marginTop: 12, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
+      <div className="tiny muted" style={{ marginBottom: 8, lineHeight: 1.5 }}>
+        For a card or loan no bank connection reaches. Its balance is kept up to
+        date by typing it in.
+      </div>
+
+      <label className="tiny muted">Name
+        <input style={field} value={name} onChange={(e) => setName(e.target.value)}
+          placeholder="What it is called" />
+      </label>
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <label className="tiny muted" style={{ flex: 1 }}>Whose
+          <select style={field} value={owner} onChange={(e) => setOwner(e.target.value)}>
+            {owners.map((o) => (
+              <option key={o} value={o}>{ownerLabel(o)}</option>
+            ))}
+          </select>
+        </label>
+        <label className="tiny muted" style={{ flex: 1 }}>Kind
+          <select style={field} value={kind}
+            onChange={(e) => setKind(e.target.value as 'card' | 'loan' | 'tax')}>
+            <option value="card">Credit card</option>
+            <option value="loan">Loan</option>
+            <option value="tax">Tax payment plan</option>
+          </select>
+        </label>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <label className="tiny muted" style={{ flex: 1 }}>Balance owed
+          <input style={field} className="tnum" inputMode="decimal" value={balance}
+            onChange={(e) => setBalance(e.target.value)} placeholder="0.00" />
+        </label>
+        <label className="tiny muted" style={{ flex: 1 }}>Rate %
+          <input style={field} className="tnum" inputMode="decimal" value={rate}
+            onChange={(e) => setRate(e.target.value)} placeholder="optional" />
+        </label>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <label className="tiny muted" style={{ flex: 1 }}>Minimum payment
+          <input style={field} className="tnum" inputMode="decimal" value={minimum}
+            onChange={(e) => setMinimum(e.target.value)} placeholder="0.00" />
+        </label>
+        <label className="tiny muted" style={{ flex: 1 }}>Issuer
+          <input style={field} value={institution}
+            onChange={(e) => setInstitution(e.target.value)} placeholder="optional" />
+        </label>
+      </div>
+
+      <label className="tiny muted" style={{ display: 'block', marginTop: 8 }}>Describe it
+        <input style={field} value={typeLabel} onChange={(e) => setTypeLabel(e.target.value)}
+          placeholder="Store credit card, auto loan…" />
+      </label>
+
+      {err && (
+        <div className="tiny" style={{ color: 'var(--red)', marginTop: 8 }}>{err}</div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        <button className="btn" disabled={!canSave} onClick={() => void save()}>
+          {busy ? 'Adding…' : 'Add it'}
+        </button>
+        <button className="btn ghost" onClick={() => { setOpen(false); setErr(null) }}>
+          Cancel
+        </button>
+      </div>
+      <div className="tiny muted" style={{ marginTop: 8, lineHeight: 1.5 }}>
+        It slots into the payoff queue by rate — highest first — so nothing needs
+        reordering by hand.
+      </div>
     </div>
   )
 }
