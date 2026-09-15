@@ -227,6 +227,31 @@ Deno.serve(async (req: Request) => {
     }
   }
 
+  // ---------- balance_stale: a typed-in figure has gone unrefreshed ----------
+  // Five debts cannot be reached by Plaid at all, so their balances are only ever
+  // as good as the last time somebody typed one in — and every figure derived from
+  // them, including the payoff projection and the headline total, is exactly that
+  // stale without saying so. Nagging once a month per account rather than nightly:
+  // a reminder that arrives every day is one that gets swiped away every day.
+  const STALE_DAYS = 30
+  for (const a of withBalance) {
+    if (!a.is_manual) continue
+    const b = balanceBy.get(a.id as string)
+    const asOf = b?.as_of as string | undefined
+    if (!asOf) continue
+    const age = Math.round(
+      (Date.parse(`${now.iso}T00:00:00Z`) - Date.parse(`${asOf}T00:00:00Z`)) / 86400000,
+    )
+    if (age >= STALE_DAYS) {
+      alerts.push({
+        type: 'balance_stale',
+        title: 'Balance needs updating',
+        body: `${a.name} was last updated ${age} days ago. Anything worked out from it is that old too.`,
+        dedupe: `balance_stale:${a.id}:${now.year}-${now.month}`,
+      })
+    }
+  }
+
   // ---------- account_cleared: queued by sync ----------
   const { data: pendingCleared } = await admin
     .from('alert_log')

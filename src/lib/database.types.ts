@@ -24,6 +24,8 @@ export type AlertType =
   | 'optional_80'
   | 'business_low'
   | 'account_cleared'
+  | 'balance_stale'
+  | 'item_login_required'
   | 'monthly_summary'
 
 export type AccountRow = {
@@ -179,6 +181,11 @@ export type Database = {
           total_owed: number | null
           savings: number | null
           open_debts: number | null
+          /** How many debts had a reading by this week, and how many exist. */
+          debts_covered: number
+          debts_total: number
+          /** False when total_owed is missing an account rather than short one. */
+          fully_covered: boolean
         }
         Relationships: []
       }
@@ -189,8 +196,10 @@ export type Database = {
           name: string
           kind: string
           owner: string
-          balance: number
+          /** NULL when nothing had been recorded for this account yet. */
+          balance: number | null
           balance_as_of: string | null
+          covered: boolean
         }
         Relationships: []
       }
@@ -204,6 +213,20 @@ export type Database = {
           created_at: string
           prev_balance: number | null
           prev_as_of: string | null
+        }
+        Relationships: []
+      }
+      account_progress: {
+        Row: {
+          account_id: string
+          name: string
+          kind: string
+          owner: string
+          payoff_order: number
+          current_balance: number | null
+          peak_balance: number
+          paid_off: number
+          pct_paid: number
         }
         Relationships: []
       }

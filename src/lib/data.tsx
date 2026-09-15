@@ -55,6 +55,15 @@ export interface PlanSettings {
   plan_started_on: string
 }
 
+/** How far one debt has come against the highest balance ever recorded for it. */
+export interface AccountProgress {
+  account_id: string
+  current_balance: number
+  peak_balance: number
+  paid_off: number
+  pct_paid: number
+}
+
 interface DataState {
   loading: boolean
   error: string | null
@@ -70,6 +79,8 @@ interface DataState {
   rules: MerchantRuleRow[]
   prefs: NotificationPrefRow[]
   memberNames: Record<string, string>
+  /** Keyed by account id. Absent for an account with nothing recorded yet. */
+  progress: Record<string, AccountProgress>
   lastSyncedAt: string | null
   refresh: () => Promise<void>
 }
@@ -101,6 +112,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     rules: [],
     prefs: [],
     memberNames: {},
+    progress: {},
     lastSyncedAt: null,
   })
 
@@ -122,6 +134,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       prefsRes,
       membersRes,
       itemsRes,
+      acctProgRes,
     ] = await Promise.all([
       supabase.from('accounts').select('*').order('payoff_order'),
       supabase.from('account_balance_current').select('*'),
@@ -139,6 +152,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         : Promise.resolve({ data: [], error: null }),
       supabase.from('household_members').select('user_id, display_name'),
       supabase.from('plaid_items').select('last_synced'),
+      supabase.from('account_progress').select('*'),
     ])
 
     const firstError =
@@ -212,6 +226,20 @@ export function DataProvider({ children }: { children: ReactNode }) {
       rules: (rulesRes.data ?? []) as MerchantRuleRow[],
       prefs: (prefsRes.data ?? []) as NotificationPrefRow[],
       memberNames,
+      // numeric comes back from PostgREST as a string; coerce at the boundary so
+      // nothing downstream ever concatenates where it meant to add.
+      progress: Object.fromEntries(
+        (acctProgRes.data ?? []).map((r: Record<string, unknown>) => [
+          r.account_id as string,
+          {
+            account_id: r.account_id as string,
+            current_balance: num(r.current_balance),
+            peak_balance: num(r.peak_balance),
+            paid_off: num(r.paid_off),
+            pct_paid: num(r.pct_paid),
+          } satisfies AccountProgress,
+        ]),
+      ),
       lastSyncedAt: lastSyncedAt ?? null,
     })
   }, [isMember, user])
@@ -273,6 +301,7 @@ export function usePayoffPlan() {
       sim,
       savingsBalance: savings?.balance ?? 0,
       depositTarget: plan.deposit_target,
+      monthlySavings: plan.monthly_savings,
       savingsRemaining: Math.max(0, plan.deposit_target - (savings?.balance ?? 0)),
       attackFund: plan.attack_fund,
       planStartedOn: plan.plan_started_on,

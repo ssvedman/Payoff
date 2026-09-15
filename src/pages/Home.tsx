@@ -74,7 +74,7 @@ function HomeSkeleton() {
 
 export default function Home() {
   const navigate = useNavigate()
-  const { loading, error, debts, lastSyncedAt } = useData()
+  const { loading, error, debts, lastSyncedAt, progress } = useData()
   const plan = usePayoffPlan()
   const totals = useMonthTotals()
 
@@ -152,7 +152,18 @@ export default function Home() {
         ? `projected to clear in ${clearEvent.month} ${clearEvent.month === 1 ? 'month' : 'months'}`
         : 'no projected clearing month at the current payment'
 
-  const savingsPct = plan.depositTarget > 0 ? clamp01(plan.savingsBalance / plan.depositTarget) : 0
+  /**
+   * Savings is measured against where the plan should have reached BY NOW, not
+   * against the final figure. Against the final target a household saving exactly
+   * what it promised every month still shows a nearly empty bar for years, which
+   * reports failure at something being done correctly.
+   *
+   * Month N expects N deposits. Capped at the final target, so the bar completes
+   * rather than running past 100% once the goal is met.
+   */
+  const pacedTarget = Math.min(monthNo * plan.monthlySavings, plan.depositTarget)
+  const savingsPct = pacedTarget > 0 ? clamp01(plan.savingsBalance / pacedTarget) : 0
+  const savingsAhead = plan.savingsBalance - pacedTarget
 
   return (
     <div className="page">
@@ -303,29 +314,63 @@ export default function Home() {
             )
           }
 
+          // Progress is measured against the highest balance ever recorded for
+          // this account, not its opening figure: a card that was run up after
+          // the plan started peaked above where it opened, and measuring from
+          // the opening figure would report progress that has not happened.
+          const p = progress[d.id]
+          const showProgress = p !== undefined && p.peak_balance > 0 && p.paid_off > 0
+
           return (
-            <div className="row" key={d.id} style={rowStyle}>
-              <div
-                className="dot"
-                style={
-                  isTarget ? { background: 'var(--amber)' } : { border: '2px solid var(--line)' }
-                }
-                aria-hidden="true"
-              />
-              <div style={{ flex: 1 }}>
-                {isTarget ? (
-                  <div style={{ fontWeight: 700, fontSize: 14.5 }}>{accountLabel(d)}</div>
-                ) : (
-                  <div className="sm">{accountLabel(d)}</div>
-                )}
-                <div className="tiny muted tnum">{rateLine(d.apr)}</div>
-              </div>
-              {isTarget ? (
-                <div className="tnum" style={{ fontWeight: 700, fontSize: 14.5 }}>
-                  {money(d.balance)}
+            <div
+              key={d.id}
+              style={{
+                ...rowStyle,
+                padding: '12px 0',
+                borderBottom: last ? 'none' : '1px solid var(--line)',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
+                <div
+                  className="dot"
+                  style={
+                    isTarget ? { background: 'var(--amber)' } : { border: '2px solid var(--line)' }
+                  }
+                  aria-hidden="true"
+                />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  {isTarget ? (
+                    <div style={{ fontWeight: 700, fontSize: 14.5 }}>{accountLabel(d)}</div>
+                  ) : (
+                    <div className="sm">{accountLabel(d)}</div>
+                  )}
+                  <div className="tiny muted tnum">{rateLine(d.apr)}</div>
                 </div>
-              ) : (
-                <div className="tnum sm">{money(d.balance)}</div>
+                <div style={{ textAlign: 'right' }}>
+                  <div
+                    className="tnum"
+                    style={{ fontWeight: isTarget ? 700 : 400, fontSize: isTarget ? 14.5 : 13.5 }}
+                  >
+                    {money(d.balance)}
+                  </div>
+                  {showProgress && (
+                    <div className="tiny muted tnum" style={{ marginTop: 1 }}>
+                      of {money(p.peak_balance)}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {showProgress && (
+                <div style={{ marginTop: 8, marginLeft: 27 }}>
+                  {/* Never amber — that is reserved for the current target, and a
+                      progress bar on every row would spread it across the whole
+                      queue. */}
+                  <Bar pct={clamp01(p.pct_paid / 100)} color="var(--green)" />
+                  <div className="tiny muted tnum" style={{ marginTop: 4 }}>
+                    {money(p.paid_off)} paid · {p.pct_paid}%
+                  </div>
+                </div>
               )}
             </div>
           )
@@ -348,7 +393,14 @@ export default function Home() {
         </div>
         <Bar pct={savingsPct} color="var(--green)" />
         <div className="tiny muted tnum" style={{ marginTop: 6 }}>
-          {money(plan.savingsRemaining)} to the deposit target
+          {money(pacedTarget)} expected by month {monthNo} ·{' '}
+          <span style={{ color: savingsAhead >= 0 ? 'var(--green)' : 'var(--red)' }}>
+            {savingsAhead >= 0 ? '+' : '−'}
+            {money(Math.abs(savingsAhead))}
+          </span>
+        </div>
+        <div className="tiny muted tnum" style={{ marginTop: 3 }}>
+          {money(plan.savingsRemaining)} to the {money(plan.depositTarget)} deposit target
         </div>
       </div>
     </div>

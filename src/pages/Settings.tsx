@@ -60,6 +60,12 @@ const ALERTS: Alert[] = [
     defaultOn: true,
   },
   {
+    type: 'balance_stale',
+    title: 'A typed-in balance is old',
+    subtitle: 'Once a month, per account, after 30 days',
+    defaultOn: true,
+  },
+  {
     type: 'monthly_summary',
     title: 'Monthly summary',
     subtitle: 'First of the month',
