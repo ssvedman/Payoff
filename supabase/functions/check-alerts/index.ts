@@ -159,7 +159,18 @@ Deno.serve(async (req: Request) => {
     }
   })
 
-  const target = withBalance.find((a) => a.balance > 0) ?? null
+  /**
+   * Cleared means the same thing here as it does in the app: nothing owed, OR a
+   * clearing date on record. Testing only the balance let an account that had
+   * been marked cleared by hand, but still showed a stale positive figure, be
+   * picked as the target — and the target is what the attack_missing alert
+   * watches, so the wrong one silently watches the wrong account.
+   */
+  const isCleared = (a: { balance: number; cleared_at: unknown }) =>
+    a.balance <= 0 || a.cleared_at !== null
+
+  const open = withBalance.filter((a) => !isCleared(a))
+  const target = open[0] ?? null
 
   // ---------- balance_up: a NON-TARGET account's balance rose ----------
   for (const a of withBalance) {
@@ -276,12 +287,12 @@ Deno.serve(async (req: Request) => {
 
   // ---------- monthly_summary: 1st of the month, opt-in ----------
   if (now.day === 1 && plan) {
-    const owed = withBalance.filter((a) => a.balance > 0).reduce((s, a) => s + a.balance, 0)
+    const owed = open.reduce((s, a) => s + a.balance, 0)
     alerts.push({
       type: 'monthly_summary',
       title: 'Monthly summary',
       body: target
-        ? `${money(owed)} owed across ${withBalance.filter((a) => a.balance > 0).length} accounts. Current target is ${target.name}.`
+        ? `${money(owed)} owed across ${open.length} accounts. Current target is ${target.name}.`
         : `${money(owed)} owed. Every account is clear.`,
       dedupe: `monthly_summary:${now.year}-${now.month}`,
     })
