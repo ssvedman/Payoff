@@ -1,8 +1,9 @@
 /**
  * `plaid-link` — the one-time linking helper. BUILD.md §5.
  *
- * There is deliberately NO bank-linking UI in the app. Accounts are a fixed set,
- * linked once by hand with scripts/link.mjs driving this function.
+ * BUILD.md §2.5 originally said there would be NO bank-linking UI. That was
+ * reversed so the second household member can link her own accounts remotely;
+ * /link in the app and scripts/link.mjs both drive this function.
  *
  * The Trial plan allows exactly 10 items and removing one does not restore the
  * allowance, so every action here is explicit and one institution at a time.
