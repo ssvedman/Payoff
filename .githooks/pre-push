@@ -25,6 +25,28 @@ while IFS= read -r pat; do
   done
 done < "$PATTERNS_FILE"
 
+# Commit IDENTITY is not part of any tree, so the grep above cannot see it. The
+# PII audit found a real personal email published as the author of every commit,
+# which no file edit would have fixed. Check it explicitly.
+for c in $(git rev-list --all); do
+  for who in "%ae" "%ce"; do
+    addr=$(git log -1 --format="$who" "$c")
+    case "$addr" in
+      *@users.noreply.github.com) ;;
+      *noreply*) ;;
+      "")          ;;
+      *)
+        echo "pre-push: BLOCKED — commit $(git rev-parse --short "$c") is authored by <$addr>."
+        echo "pre-push: Personal addresses are published with every commit and are"
+        echo "pre-push: visible through the GitHub API. Use the noreply address:"
+        echo "pre-push:   git config user.email '<id>+<user>@users.noreply.github.com'"
+        echo "pre-push: then re-author the history — amending the tip is not enough."
+        FAIL=1
+        ;;
+    esac
+  done
+done
+
 if [ "$FAIL" = "1" ]; then
   echo ""
   echo "pre-push: nothing was pushed. Remove the PII and rewrite the offending"
