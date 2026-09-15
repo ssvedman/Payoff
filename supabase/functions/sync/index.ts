@@ -20,7 +20,7 @@ import {
   PlaidError,
   type PlaidAccount,
 } from './plaid.ts'
-import { categorize, type Bucket, type RuleLike } from './categorize.ts'
+import { categorize, matchRule as matchedRule, type Bucket, type RuleLike } from './categorize.ts'
 
 // SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are injected by the platform.
 // They cannot be set as custom secrets — the name prefix SUPABASE_ is reserved.
@@ -116,11 +116,30 @@ Deno.serve(async (req: Request) => {
     errors: [] as string[],
   }
 
-  const [{ data: itemRows }, { data: accountRows }, { data: ruleRows }] = await Promise.all([
-    admin.from('plaid_items').select('*'),
-    admin.from('accounts').select('*'),
-    admin.from('merchant_rules').select('match_text, bucket'),
-  ])
+  const [{ data: itemRows }, { data: accountRows }, { data: ruleRows }, { data: lineRuleRows }] =
+    await Promise.all([
+      admin.from('plaid_items').select('*'),
+      admin.from('accounts').select('*'),
+      admin.from('merchant_rules').select('match_text, bucket, budget_line_id'),
+      admin.from('budget_line_rules').select('plaid_prefix, budget_line_id'),
+    ])
+
+  /**
+   * Which budget line a Plaid category counts against. Longest matching prefix
+   * wins, so a detailed category beats a broad one. A merchant rule overrides it.
+   */
+  const lineRules = ((lineRuleRows ?? []) as { plaid_prefix: string; budget_line_id: string }[])
+    .slice()
+    .sort((a, b) => b.plaid_prefix.length - a.plaid_prefix.length)
+
+  const lineForCategory = (detailed: string | null): string | null => {
+    if (!detailed) return null
+    const up = detailed.toUpperCase()
+    for (const r of lineRules) {
+      if (up === r.plaid_prefix || up.startsWith(r.plaid_prefix)) return r.budget_line_id
+    }
+    return null
+  }
 
   const accounts = (accountRows ?? []) as AccountRow[]
   const rules = (ruleRows ?? []) as RuleLike[]
@@ -235,11 +254,11 @@ Deno.serve(async (req: Request) => {
       if (incoming.length) {
         // A manual override is never recomputed, so read what we already hold.
         const ids = incoming.map((t) => t.transaction_id)
-        const existing = new Map<string, { bucket: string; bucket_source: string }>()
+        const existing = new Map<string, { bucket: string; bucket_source: string; budget_line_id: string | null }>()
         for (let i = 0; i < ids.length; i += 200) {
           const { data, error } = await admin
             .from('transactions')
-            .select('plaid_transaction_id, bucket, bucket_source')
+            .select('plaid_transaction_id, bucket, bucket_source, budget_line_id')
             .in('plaid_transaction_id', ids.slice(i, i + 200))
           // Swallowing this would make every manual override look absent and get
           // silently recomputed — "a manual override is never recomputed" is a
@@ -249,6 +268,7 @@ Deno.serve(async (req: Request) => {
             existing.set(row.plaid_transaction_id as string, {
               bucket: row.bucket as string,
               bucket_source: row.bucket_source as string,
+              budget_line_id: (row.budget_line_id as string | null) ?? null,
             })
           }
         }
@@ -272,6 +292,14 @@ Deno.serve(async (req: Request) => {
             existingBucket: prior?.bucket as Bucket | undefined,
           })
 
+          // A hand-set line is never recomputed, exactly like a manual bucket.
+          // Otherwise a merchant rule decides, then the category map.
+          const ruleLine = matchedRule(t.name, t.merchant_name, rules)?.budget_line_id ?? null
+          const budgetLineId =
+            prior?.bucket_source === 'manual'
+              ? prior.budget_line_id
+              : ruleLine ?? lineForCategory(detailed)
+
           return {
             plaid_transaction_id: t.transaction_id,
             account_id: acct.id,
@@ -283,6 +311,7 @@ Deno.serve(async (req: Request) => {
             plaid_category: detailed,
             bucket,
             bucket_source: source,
+            budget_line_id: budgetLineId,
             pending: t.pending,
           }
         })

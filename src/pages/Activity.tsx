@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from 'react'
+import { Fragment, useMemo, useState, useCallback} from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
 import { useData, type Transaction } from '../lib/data'
@@ -32,7 +32,7 @@ const matchesRuleText = (t: Transaction, text: string) =>
   `${t.name ?? ''} ${t.merchant_name ?? ''}`.toLowerCase().includes(text)
 
 export default function Activity() {
-  const { loading, error, accounts, transactions, refresh } = useData()
+  const { loading, error, accounts, transactions, refresh, budgetLines} = useData()
   const { user } = useAuth()
 
   const [filter, setFilter] = useState<Filter>('all')
@@ -61,7 +61,17 @@ export default function Activity() {
     return groups
   }, [visible])
 
-  async function choose(t: Transaction, chosen: Bucket) {
+
+  /** The budget lines belonging to a bucket. Only fixed and optional have any. */
+  const linesFor = useCallback(
+    (bucket: string) =>
+      budgetLines
+        .filter((l) => l.bucket === bucket)
+        .sort((a, b) => a.sort_order - b.sort_order),
+    [budgetLines],
+  )
+
+  async function choose(t: Transaction, chosen: Bucket, lineId?: string | null) {
     setSaving(true)
     setSaveError(null)
     try {
@@ -74,6 +84,9 @@ export default function Activity() {
         const rule: Partial<MerchantRuleRow> = {
           match_text: text,
           bucket: chosen,
+          // A rule pins the line as well, so correcting one coffee shop teaches
+          // every future one rather than just this row.
+          budget_line_id: lineId ?? null,
           created_by: user?.id ?? null,
         }
         const { error: ruleError } = await supabase
@@ -83,7 +96,11 @@ export default function Activity() {
       }
 
       // b. This transaction, marked manual so nothing recomputes it.
-      const manual: Partial<TransactionRow> = { bucket: chosen, bucket_source: 'manual' }
+      const manual: Partial<TransactionRow> = {
+        bucket: chosen,
+        bucket_source: 'manual',
+        budget_line_id: lineId ?? null,
+      }
       const { error: txError } = await supabase
         .from('transactions')
         .update(manual)
@@ -97,7 +114,11 @@ export default function Activity() {
             .map((o) => o.id)
         : []
       if (ids.length > 0) {
-        const byRule: Partial<TransactionRow> = { bucket: chosen, bucket_source: 'rule' }
+        const byRule: Partial<TransactionRow> = {
+          bucket: chosen,
+          bucket_source: 'rule',
+          budget_line_id: lineId ?? null,
+        }
         const { error: bulkError } = await supabase
           .from('transactions')
           .update(byRule)
@@ -251,7 +272,12 @@ export default function Activity() {
                                   type="button"
                                   className="pill"
                                   disabled={saving}
-                                  onClick={() => void choose(t, b.key)}
+                                  onClick={() =>
+                                    // Changing bucket clears the line, since a line
+                                    // belongs to exactly one bucket. Re-picking the
+                                    // same bucket keeps it.
+                                    void choose(t, b.key, b.key === t.bucket ? t.budget_line_id : null)
+                                  }
                                   style={{
                                     background: b.bg,
                                     color: b.tx,
@@ -262,6 +288,50 @@ export default function Activity() {
                                   {b.label}
                                 </button>
                               ))}
+                            </div>
+
+                            {/* Which target it counts against. Only fixed and
+                                optional have lines; the other buckets are not
+                                budgeted, so nothing is offered for them. */}
+                            {linesFor(t.bucket).length > 0 && (
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  gap: 6,
+                                  flexWrap: 'wrap',
+                                  alignItems: 'center',
+                                  marginTop: 8,
+                                  paddingTop: 8,
+                                  borderTop: '1px solid var(--line)',
+                                }}
+                              >
+                                <span className="tiny muted" style={{ marginRight: 2 }}>
+                                  Counts against
+                                </span>
+                                {linesFor(t.bucket).map((l) => {
+                                  const on = t.budget_line_id === l.id
+                                  return (
+                                    <button
+                                      key={l.id}
+                                      type="button"
+                                      className="pill"
+                                      disabled={saving}
+                                      onClick={() => void choose(t, t.bucket, on ? null : l.id)}
+                                      style={{
+                                        background: on ? 'var(--ink)' : 'var(--white)',
+                                        color: on ? '#fff' : 'var(--steel)',
+                                        border: on ? 'none' : '1px solid var(--line)',
+                                        opacity: saving ? 0.5 : 1,
+                                      }}
+                                    >
+                                      {l.line_name}
+                                    </button>
+                                  )
+                                })}
+                              </div>
+                            )}
+
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
                               {/* Reported beside the buckets, where the tap happened —
                                   a message at the top of a long list is never seen. */}
                               <span

@@ -91,6 +91,8 @@ export function bucketFromPlaidCategory(detailed: string | null | undefined): Bu
 export interface RuleLike {
   match_text: string
   bucket: string
+  /** Optional budget line the rule also pins. */
+  budget_line_id?: string | null
 }
 
 export function matchRule(

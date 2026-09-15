@@ -53,23 +53,23 @@ export default function Month() {
   const income = totals.income
 
   /**
-   * Per-line optional spend. There is no line_name column on transactions, so a
-   * transaction is attributed to the first line whose name appears in its name or
-   * merchant name. Anything in the optional bucket that matches no line falls into
-   * the catch-all line.
+   * Per-line optional spend, read from each transaction's budget_line_id — set by
+   * the categoriser from the Plaid category, or pinned by a merchant rule when
+   * someone corrects one in /activity. Optional spend with no line yet collects in
+   * the catch-all, so the lines always sum to the bucket.
    */
   const optionalLines = useMemo(() => {
     const lines = budgetLines.filter((l) => l.bucket === 'optional')
     const spent = new Map<string, number>(lines.map((l) => [l.id, 0]))
     const catchAll = lines.find((l) => l.line_name.trim().toLowerCase() === CATCH_ALL)
-    const matchable = lines.filter((l) => l.id !== catchAll?.id)
 
     for (const t of transactions) {
       if (t.bucket !== 'optional') continue
-      const haystack = `${t.name} ${t.merchant_name ?? ''}`.toLowerCase()
-      const hit = matchable.find((l) => haystack.includes(l.line_name.trim().toLowerCase()))
-      const lineId = hit?.id ?? catchAll?.id
-      if (!lineId) continue
+      // A transaction now carries its line explicitly. Anything not yet assigned
+      // — a merchant no rule covers — collects in the catch-all rather than being
+      // dropped, so the lines always sum to the bucket.
+      const lineId = t.budget_line_id ?? catchAll?.id
+      if (!lineId || !spent.has(lineId)) continue
       spent.set(lineId, (spent.get(lineId) ?? 0) + t.amount)
     }
 

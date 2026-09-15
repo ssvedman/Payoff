@@ -63,6 +63,7 @@ export type TransactionRow = {
   plaid_category: string | null
   bucket: Bucket
   bucket_source: BucketSource
+  budget_line_id: string | null
   pending: boolean
   created_at: string
 }
@@ -71,6 +72,7 @@ export type MerchantRuleRow = {
   id: string
   match_text: string
   bucket: Bucket
+  budget_line_id: string | null
   created_by: string | null
   created_at: string
 }
