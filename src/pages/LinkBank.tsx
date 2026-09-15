@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useData } from '../lib/data'
+import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
 import { money, moneyCents, ownerLabel, relativeTime } from '../lib/format'
 import {
@@ -14,7 +15,7 @@ import {
   type LinkStatus,
   type PlaidAccountSummary,
 } from '../lib/plaidLink'
-import { suggestAll, type Suggestion, type SeededAccount } from '../lib/suggestMapping'
+import { suggestAll, compatibleKinds, type Suggestion, type SeededAccount } from '../lib/suggestMapping'
 
 /**
  * Link a bank.
@@ -104,7 +105,10 @@ export default function LinkBank() {
         if (next[a.account_id] !== undefined) continue
         const s = suggestions.get(a.account_id)
         if (s?.kind === 'map') next[a.account_id] = s.seededId
-        else if (s?.kind === 'create_checking') next[a.account_id] = '__checking__'
+        else if (s?.kind === 'create_checking') {
+          // Seed the option that matches what the bank says this is.
+          next[a.account_id] = newOptionsFor(a)[0]?.value ?? ''
+        }
         else next[a.account_id] = ''
       }
       return next
@@ -236,7 +240,7 @@ export default function LinkBank() {
     // silently left untracked, which looks identical to having linked it.
     const picked = found
       .map((a) => choices[a.account_id])
-      .filter((c) => c && c !== '__checking__' && c !== '__checking_business__')
+      .filter((c) => c && !c.startsWith('__'))
     const dupes = picked.filter((c, i) => picked.indexOf(c) !== i)
     if (dupes.length > 0) {
       const name = accounts.find((a) => a.id === dupes[0])?.name ?? 'the same account'
@@ -253,18 +257,57 @@ export default function LinkBank() {
       for (const a of found) {
         const choice = choices[a.account_id]
         if (!choice) continue
-        if (choice === '__checking__' || choice === '__checking_business__') {
-          // Attribute it to whoever is doing the linking, rather than assuming.
-          // The Edge Function falls back to 'joint' if this is not a known owner.
-          // is_business was previously unreachable from the app: only the CLI
-          // could set it, which left the business-low alert unwireable through
-          // the one flow anybody actually uses.
-          await createCheckingAccount(a.official_name || a.name, a.account_id, {
-            owner: memberName ? memberName.trim().toLowerCase() : undefined,
-            institution: institution.trim(),
-            isBusiness: choice === '__checking_business__',
+        // Attribute a new account to whoever is doing the linking rather than
+        // assuming; the owner falls back to joint if that is not a known value.
+        const owner = memberName ? memberName.trim().toLowerCase() : undefined
+        const label = a.official_name || a.name
+
+        if (choice === '__new_card__' || choice === '__new_card_business__') {
+          // A new CARD is a debt: it belongs in the payoff queue, ordered by rate
+          // like every other one. Creating it as a checking row — the only thing
+          // this flow could previously do — filed a card as somewhere money is
+          // spent FROM, which is the opposite of what it is.
+          //
+          // The rate and minimum are left unset on purpose. Plaid reports both
+          // for a card through liabilities on the next run, and a guess here
+          // would be a figure nobody could trace.
+          const { data: newId, error: rpcErr } = await supabase.rpc('add_manual_debt', {
+            p_name: label,
+            p_owner: owner ?? 'joint',
+            p_kind: 'card',
+            p_balance: a.current ?? 0,
+            p_apr: null,
+            p_minimum: 0,
+            p_type_label: choice === '__new_card_business__' ? 'Business credit card' : 'Credit card',
+            p_institution: institution.trim() || null,
           })
-          done.push(`${a.name} added as a spending account`)
+          if (rpcErr) throw new Error(rpcErr.message)
+          await mapAccount(newId as string, a.account_id, institution.trim())
+          done.push(`${a.name} added as a credit card`)
+        } else if (choice === '__new_loan__') {
+          const { data: newId, error: rpcErr } = await supabase.rpc('add_manual_debt', {
+            p_name: label,
+            p_owner: owner ?? 'joint',
+            p_kind: 'loan',
+            p_balance: a.current ?? 0,
+            p_apr: null,
+            p_minimum: 0,
+            p_type_label: 'Loan',
+            p_institution: institution.trim() || null,
+          })
+          if (rpcErr) throw new Error(rpcErr.message)
+          await mapAccount(newId as string, a.account_id, institution.trim())
+          done.push(`${a.name} added as a loan`)
+        } else if (choice.startsWith('__new_checking') || choice === '__new_savings__') {
+          await createCheckingAccount(label, a.account_id, {
+            owner,
+            institution: institution.trim(),
+            isBusiness: choice === '__new_checking_business__',
+            kind: choice === '__new_savings__' ? 'savings' : 'checking',
+          })
+          done.push(
+            `${a.name} added as a ${choice === '__new_savings__' ? 'savings' : 'checking'} account`,
+          )
         } else {
           await mapAccount(choice, a.account_id, institution.trim())
           const s = accounts.find((x) => x.id === choice)
@@ -279,6 +322,33 @@ export default function LinkBank() {
       setError((e as Error).message)
       setPhase('mapping')
     }
+  }
+
+  /**
+   * The "create something new" options for one Plaid account, named for what the
+   * bank says it is rather than for where money goes.
+   */
+  function newOptionsFor(a: PlaidAccountSummary): { value: string; label: string }[] {
+    const kinds = compatibleKinds(a)
+    if (kinds.includes('card')) {
+      return [
+        { value: '__new_card__', label: 'Add as a new credit card' },
+        { value: '__new_card_business__', label: 'Add as a new business credit card' },
+      ]
+    }
+    if (kinds.includes('savings')) {
+      return [{ value: '__new_savings__', label: 'Add as a savings account' }]
+    }
+    if (kinds.includes('checking')) {
+      return [
+        { value: '__new_checking__', label: 'Add as a checking account' },
+        { value: '__new_checking_business__', label: 'Add as a business checking account' },
+      ]
+    }
+    if (kinds.includes('loan')) {
+      return [{ value: '__new_loan__', label: 'Add as a new loan' }]
+    }
+    return []
   }
 
   const unmappedDebts = accounts.filter(
@@ -530,12 +600,28 @@ export default function LinkBank() {
                   }}
                 >
                   <option value="">Don't track this account</option>
-                  <option value="__checking__">Add as a spending account</option>
-                  <option value="__checking_business__">Add as a BUSINESS spending account</option>
-                  {/* Every unmapped row, whatever its kind — a savings account
-                      should be selectable too, not just debts. */}
+
+                  {/*
+                    What this account could BECOME, named for what it actually is.
+                    "Spending account" covered a checking account, a savings
+                    account and a credit card alike, and created a checking row
+                    for all three — so the only way to add a new card was to file
+                    it as somewhere money is spent FROM, which is the opposite of
+                    what it is.
+                  */}
+                  {newOptionsFor(a).map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+
+                  {/*
+                    Existing rows of a COMPATIBLE kind only. Every unmapped row
+                    used to be offered, so a credit card could be matched to a tax
+                    payment plan or an auto loan — a mapping that can never be
+                    right, sitting in the list as though it were a reasonable
+                    choice.
+                  */}
                   {accounts
-                    .filter((x) => !x.plaid_account_id)
+                    .filter((x) => !x.plaid_account_id && compatibleKinds(a).includes(x.kind))
                     .map((x) => (
                       <option key={x.id} value={x.id}>
                         {ownerLabel(x.owner)} · {x.name}

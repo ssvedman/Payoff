@@ -341,6 +341,10 @@ Deno.serve(async (req: Request) => {
         const plaidAccountId = body.plaid_account_id as string
         const isBusiness = Boolean(body.is_business)
         const institution = ((body.institution as string) ?? '').trim() || null
+        // Spending accounts only. Hard-coding checking meant a savings account
+        // arrived labelled as a current account; a DEBT never comes through here.
+        const requestedKind = ((body.kind as string) ?? 'checking').trim().toLowerCase()
+        const kind = requestedKind === 'savings' ? 'savings' : 'checking'
 
         // owner is CHECK-constrained. Accept only a value the constraint allows,
         // otherwise fall back rather than failing the whole link flow at the last
@@ -365,7 +369,7 @@ Deno.serve(async (req: Request) => {
           .eq('plaid_account_id', plaidAccountId)
           .maybeSingle()
 
-        if (owns && owns.kind !== 'checking') {
+        if (owns && owns.kind !== 'checking' && owns.kind !== 'savings') {
           return json(
             {
               error: `That account is already linked to "${owns.name}". Unlink it there first — adding it as a spending account would overwrite its rate, minimum and payoff position.`,
@@ -380,10 +384,10 @@ Deno.serve(async (req: Request) => {
             {
               name,
               owner,
-              kind: 'checking',
+              kind,
               apr: null,
               minimum_payment: 0,
-              payoff_order: 98,
+              payoff_order: kind === 'savings' ? 99 : 98,
               opening_balance: 0,
               plaid_account_id: plaidAccountId,
               is_manual: false,
