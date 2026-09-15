@@ -54,6 +54,11 @@ export type AccountRow = {
    * it is recognized as one when the bank's wording shares no word with it.
    */
   payment_aliases: string[]
+  /** From the issuer, refreshed nightly. Null means "not stated this cycle". */
+  next_due_on: string | null
+  last_payment_on: string | null
+  last_payment_amount: number | null
+  last_statement_balance: number | null
   created_at: string
 }
 

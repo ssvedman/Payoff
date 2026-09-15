@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useData, type Account } from '../lib/data'
 import { useAuth } from '../lib/auth'
 import { supabase } from '../lib/supabase'
-import { apr, isoDate, money, moneyCents, minimum, accountLabel, relativeTime } from '../lib/format'
+import { isoDate, money, moneyCents, minimum, accountLabel, relativeTime, rateLabel, dueLabel } from '../lib/format'
 
 /**
  * /accounts — BUILD.md §7.
@@ -193,7 +193,7 @@ export default function Accounts() {
   function syncedSub(a: Account) {
     const parts = [a.type_label, a.institution]
     if (a.kind === 'card' || a.kind === 'loan' || a.kind === 'tax') {
-      parts.push(apr(a.apr) ?? 'payment plan', `min ${minimum(a.minimum_payment)}`)
+      parts.push(rateLabel(a), `min ${minimum(a.minimum_payment)}`, dueLabel(a.next_due_on) ?? '')
     }
     return parts.filter(Boolean).join(' · ')
   }
@@ -204,7 +204,7 @@ export default function Accounts() {
     if (a.kind === 'savings') {
       if (plan) parts.push(`target ${money(plan.deposit_target)}`)
     } else if (a.kind !== 'checking') {
-      parts.push(apr(a.apr) ?? 'payment plan')
+      parts.push(rateLabel(a))
     }
     parts.push(a.balanceUpdatedAt ? `updated ${relativeTime(a.balanceUpdatedAt)}` : 'no update yet')
     return parts.filter(Boolean).join(' · ')

@@ -334,6 +334,22 @@ Deno.serve(async (req: Request) => {
             patch.minimum_payment = credit.minimum_payment_amount
           }
 
+          // When it is due, and what was last paid. The spec asked for these from
+          // the start; they were being read off the response and discarded, so
+          // nine debts had nine due dates and the app knew none of them.
+          //
+          // A null here means "the issuer did not say this cycle", not "there is
+          // no due date" — so, as with the rate, never write a null over a value
+          // that is already known.
+          if (credit.next_payment_due_date) patch.next_due_on = credit.next_payment_due_date
+          if (credit.last_payment_date) patch.last_payment_on = credit.last_payment_date
+          if (typeof credit.last_payment_amount === 'number') {
+            patch.last_payment_amount = credit.last_payment_amount
+          }
+          if (typeof credit.last_statement_balance === 'number') {
+            patch.last_statement_balance = credit.last_statement_balance
+          }
+
           if (Object.keys(patch).length) {
             const { error: liabErr } = await admin.from('accounts').update(patch).eq('id', acct.id)
             // Counting an unchecked write as a success reported an APR refresh
