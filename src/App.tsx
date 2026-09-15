@@ -11,6 +11,7 @@ import Activity from './pages/Activity'
 import Accounts from './pages/Accounts'
 import Settings from './pages/Settings'
 import LinkBank from './pages/LinkBank'
+import History from './pages/History'
 
 /**
  * Non-negotiable #1: nothing renders before authentication.
@@ -80,6 +81,7 @@ function Shell() {
       <Route path="/accounts" element={<RequireAuth><Accounts /></RequireAuth>} />
       <Route path="/settings" element={<RequireAuth><Settings /></RequireAuth>} />
       <Route path="/link"     element={<RequireAuth><LinkBank /></RequireAuth>} />
+      <Route path="/history"  element={<RequireAuth><History /></RequireAuth>} />
 
       {/* Catch-all: the auth *error* redirect can still clobber the fragment, so
           anything unrecognised goes home rather than rendering a blank screen. */}

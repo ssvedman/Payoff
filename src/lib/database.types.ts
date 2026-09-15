@@ -39,6 +39,8 @@ export type AccountRow = {
   is_manual: boolean
   cleared_at: string | null
   is_business: boolean
+  /** Human description for the UI: "Auto loan", "Savings account". */
+  type_label: string | null
   created_at: string
 }
 
@@ -160,6 +162,27 @@ export type Database = {
       audit_log: T<AuditLogRow>
     }
     Views: {
+      debt_history_weekly: {
+        Row: {
+          week_start: string
+          total_owed: number | null
+          savings: number | null
+          open_debts: number | null
+        }
+        Relationships: []
+      }
+      account_balance_weekly: {
+        Row: {
+          week_start: string
+          account_id: string
+          name: string
+          kind: string
+          owner: string
+          balance: number
+          balance_as_of: string | null
+        }
+        Relationships: []
+      }
       account_balance_current: {
         Row: {
           account_id: string

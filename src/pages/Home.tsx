@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import Bar from '../components/Bar'
 import { useData, usePayoffPlan, useMonthTotals } from '../lib/data'
+import { useNavigate } from 'react-router-dom'
 import { apr, money, accountLabel, parseDateOnly, relativeTime } from '../lib/format'
 import { monthNumber, totalPlanMonths } from '../lib/avalanche'
 
@@ -72,6 +73,7 @@ function HomeSkeleton() {
 }
 
 export default function Home() {
+  const navigate = useNavigate()
   const { loading, error, debts, lastSyncedAt } = useData()
   const plan = usePayoffPlan()
   const totals = useMonthTotals()
@@ -187,6 +189,22 @@ export default function Home() {
 
       <div style={{ marginBottom: 20 }}>
         <Bar pct={plan.progress} color="var(--green)" />
+
+        <button
+          type="button"
+          onClick={() => navigate('/history')}
+          className="tiny muted"
+          style={{
+            background: 'none',
+            border: 'none',
+            padding: '6px 0 0',
+            cursor: 'pointer',
+            font: 'inherit',
+            textDecoration: 'underline',
+          }}
+        >
+          See how this has moved
+        </button>
       </div>
 
       {target ? (

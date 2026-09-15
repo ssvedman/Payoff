@@ -1,9 +1,9 @@
-import { Fragment, useMemo, useState, useCallback} from 'react'
+import { Fragment, useEffect, useMemo, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
 import { useData, type Transaction } from '../lib/data'
 import { ruleTextFor } from '../lib/categorize'
-import { accountLabel, dayHeading, signedMoney } from '../lib/format'
+import { accountLabel, dayHeading, isoDate, signedMoney, MONTH_NAMES } from '../lib/format'
 import type { Bucket, MerchantRuleRow, TransactionRow } from '../lib/database.types'
 
 /** Pill colors per BUILD.md §8. Amber is "Optional" only, exactly as mockups.html shows. */
@@ -32,7 +32,55 @@ const matchesRuleText = (t: Transaction, text: string) =>
   `${t.name ?? ''} ${t.merchant_name ?? ''}`.toLowerCase().includes(text)
 
 export default function Activity() {
-  const { loading, error, accounts, transactions, refresh, budgetLines} = useData()
+  const { loading, error, accounts, transactions: currentMonthTxns, refresh, budgetLines } = useData()
+
+  /**
+   * Which month is on screen. The shared data layer loads the current month only,
+   * because that is what the home and month screens report on — so anything older
+   * is fetched here. Defaults to the month being viewed.
+   */
+  const [anchor, setAnchor] = useState(() => {
+    const now = new Date()
+    return new Date(now.getFullYear(), now.getMonth(), 1)
+  })
+  const [pastTxns, setPastTxns] = useState<Transaction[] | null>(null)
+  const [loadingMonth, setLoadingMonth] = useState(false)
+
+  const thisMonth = useMemo(() => {
+    const n = new Date()
+    return anchor.getFullYear() === n.getFullYear() && anchor.getMonth() === n.getMonth()
+  }, [anchor])
+
+  const monthBounds = useMemo(() => {
+    const from = isoDate(new Date(anchor.getFullYear(), anchor.getMonth(), 1))
+    const to = isoDate(new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0))
+    return { from, to }
+  }, [anchor])
+
+  const loadMonth = useCallback(async () => {
+    if (thisMonth) {
+      setPastTxns(null)
+      return
+    }
+    setLoadingMonth(true)
+    const { data } = await supabase
+      .from('transactions')
+      .select('*')
+      .gte('posted_on', monthBounds.from)
+      .lte('posted_on', monthBounds.to)
+      .order('posted_on', { ascending: false })
+    setPastTxns(
+      (data ?? []).map((t) => ({ ...(t as unknown as Transaction), amount: Number(t.amount) })),
+    )
+    setLoadingMonth(false)
+  }, [thisMonth, monthBounds])
+
+  useEffect(() => {
+    void loadMonth()
+  }, [loadMonth])
+
+  /** The current month comes from the shared loader; older months from here. */
+  const transactions = thisMonth ? currentMonthTxns : (pastTxns ?? [])
   const { user } = useAuth()
 
   const [filter, setFilter] = useState<Filter>('all')
@@ -137,8 +185,9 @@ export default function Activity() {
         if (bulkError) throw bulkError
       }
 
-      // d. Re-read.
+      // d. Re-read whichever month is on screen.
       await refresh()
+      await loadMonth()
       setOpenId(null)
     } catch (e) {
       console.error('Recategorization failed', e)
@@ -153,6 +202,43 @@ export default function Activity() {
       <div style={{ fontWeight: 700, fontSize: 20, marginBottom: 4 }}>Activity</div>
       <div className="tiny muted" style={{ marginBottom: 14 }}>
         Tap a label to recategorize. It sticks for that merchant.
+      </div>
+
+      {/* Month switcher. Forward is disabled at the current month — there is
+          nothing recorded ahead of today, and an empty future month reads as a
+          fault rather than as the calendar. */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          marginBottom: 12,
+          borderBottom: '1px solid var(--line)',
+          paddingBottom: 10,
+        }}
+      >
+        <button
+          type="button"
+          className="btn ghost"
+          style={{ width: 'auto', padding: '6px 12px', fontSize: 13 }}
+          aria-label="Previous month"
+          onClick={() => setAnchor((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))}
+        >
+          ‹
+        </button>
+        <div className="sm tnum" style={{ fontWeight: 700 }}>
+          {MONTH_NAMES[anchor.getMonth()]} {anchor.getFullYear()}
+        </div>
+        <button
+          type="button"
+          className="btn ghost"
+          style={{ width: 'auto', padding: '6px 12px', fontSize: 13, opacity: thisMonth ? 0.35 : 1 }}
+          aria-label="Next month"
+          disabled={thisMonth}
+          onClick={() => setAnchor((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))}
+        >
+          ›
+        </button>
       </div>
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -211,12 +297,18 @@ export default function Activity() {
             </div>
           ))}
         </div>
+      ) : loadingMonth ? (
+        <div className="sm muted" style={{ textAlign: 'center', padding: '34px 0' }}>
+          Loading {MONTH_NAMES[anchor.getMonth()]}…
+        </div>
       ) : days.length === 0 ? (
         // Nothing loaded is not the same as nothing there: when the read failed the
         // message above already states that, and claiming an empty month would be wrong.
         error ? null : (
           <div className="sm muted" style={{ textAlign: 'center', padding: '34px 0' }}>
-            {filter === 'all' ? 'No transactions this month.' : 'Nothing in this filter.'}
+            {filter === 'all'
+              ? `No transactions in ${MONTH_NAMES[anchor.getMonth()]}.`
+              : 'Nothing in this filter.'}
           </div>
         )
       ) : (

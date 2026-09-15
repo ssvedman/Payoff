@@ -54,16 +54,36 @@ export default function Accounts() {
   const [saving, setSaving] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
 
-  const synced = useMemo(
-    // "Synced" means a bank is actually attached — not merely that the account was
-    // seeded with the intention of syncing one day. is_manual records intent; an
-    // account with no plaid_account_id is showing a figure somebody typed,
-    // whatever the intent was, and listing it as synced implies a live balance
-    // that does not exist.
-    () => accounts.filter((a) => a.plaid_account_id).sort(byPayoffOrder),
+  /**
+   * Debts are the payoff queue. Bank accounts are where money sits and is spent
+   * from — they are not owed to anybody, so mixing them into one list invites
+   * reading a chequing balance as part of what the household owes.
+   */
+  const isDebt = (a: Account) => a.kind === 'card' || a.kind === 'loan' || a.kind === 'tax'
+
+  /**
+   * "Connected" means a bank is actually attached — not merely that the account
+   * was seeded with the intention of syncing one day. is_manual records intent; an
+   * account with no plaid_account_id is showing a figure somebody typed, whatever
+   * the intent was, and calling it synced implies a live balance that does not
+   * exist.
+   */
+  const debtsConnected = useMemo(
+    () => accounts.filter((a) => isDebt(a) && a.plaid_account_id).sort(byPayoffOrder),
     [accounts],
   )
 
+  const debtsTyped = useMemo(
+    () => accounts.filter((a) => isDebt(a) && !a.plaid_account_id).sort(byPayoffOrder),
+    [accounts],
+  )
+
+  const banks = useMemo(
+    () => accounts.filter((a) => !isDebt(a)).sort(byPayoffOrder),
+    [accounts],
+  )
+
+  /** Every account whose balance is typed in, whatever kind it is. */
   const manual = useMemo(
     () => accounts.filter((a) => !a.plaid_account_id).sort(byPayoffOrder),
     [accounts],
@@ -144,21 +164,29 @@ export default function Accounts() {
   }
 
   /** "12.34% · min $100 · owner" — "payment plan" stands in where there is no rate. */
-  /** The owner now leads the account name, so it is not repeated here. */
+  /**
+   * The owner now leads the account name, so it is not repeated here. The type
+   * label leads instead: "Auto loan" answers the first question a reader has when
+   * scanning a list of nine debts, which the rate alone does not.
+   */
   function syncedSub(a: Account) {
-    return `${apr(a.apr) ?? 'payment plan'} · min ${minimum(a.minimum_payment)}`
+    const parts = [a.type_label]
+    if (a.kind === 'card' || a.kind === 'loan' || a.kind === 'tax') {
+      parts.push(apr(a.apr) ?? 'payment plan', `min ${minimum(a.minimum_payment)}`)
+    }
+    return parts.filter(Boolean).join(' · ')
   }
 
   /** "12.34% · updated 3 days ago" — savings shows its deposit target instead of a rate. */
   function manualSub(a: Account) {
-    const parts: string[] = []
+    const parts: (string | null)[] = [a.type_label]
     if (a.kind === 'savings') {
       if (plan) parts.push(`target ${money(plan.deposit_target)}`)
-    } else {
+    } else if (a.kind !== 'checking') {
       parts.push(apr(a.apr) ?? 'payment plan')
     }
     parts.push(a.balanceUpdatedAt ? `updated ${relativeTime(a.balanceUpdatedAt)}` : 'no update yet')
-    return parts.join(' · ')
+    return parts.filter(Boolean).join(' · ')
   }
 
   const lastSavedBy = lastManual?.enteredBy ? memberNames[lastManual.enteredBy] : undefined
@@ -198,33 +226,26 @@ export default function Accounts() {
 
       {showSkeleton ? (
         <>
-          <div className="tiny muted" style={{ fontWeight: 700, marginBottom: 4 }}>
-            SYNCED
-          </div>
-          <SkeletonRows count={7} />
-          <div className="tiny muted" style={{ fontWeight: 700, margin: '20px 0 4px' }}>
-            TYPED IN
-          </div>
+          <div className="skeleton" style={{ width: 96, height: 10, marginBottom: 10 }} />
+          <SkeletonRows count={4} />
+          <div className="skeleton" style={{ width: 96, height: 10, margin: '20px 0 10px' }} />
           <SkeletonRows count={3} />
           <div className="skeleton" style={{ height: 46, marginTop: 16 }} />
         </>
       ) : (
         <>
           <div className="tiny muted" style={{ fontWeight: 700, marginBottom: 4 }}>
-            SYNCED
+            DEBTS · CONNECTED
           </div>
-          {synced.length === 0 ? (
+          {debtsConnected.length === 0 ? (
             <div className="tiny muted" style={{ padding: '10px 0' }}>
-              No synced accounts.
+              No debts are connected to a bank yet.
             </div>
           ) : (
             <table>
               <tbody>
-                {synced.map((a) => {
-                  // Only a debt clears. Green marks a cleared debt; a checking or
-                  // savings account sitting at zero is just a balance.
-                  const isDebt = a.kind !== 'savings' && a.kind !== 'checking'
-                  const isClear = isDebt && (a.balance <= 0 || Boolean(a.cleared_at))
+                {debtsConnected.map((a) => {
+                  const isClear = a.balance <= 0 || Boolean(a.cleared_at)
                   return (
                     <tr key={a.id}>
                       <td>
@@ -247,44 +268,86 @@ export default function Accounts() {
           )}
 
           <div className="tiny muted" style={{ fontWeight: 700, margin: '20px 0 4px' }}>
-            TYPED IN
+            DEBTS · TYPED IN
           </div>
-          {manual.length === 0 ? (
+          {debtsTyped.length === 0 ? (
             <div className="tiny muted" style={{ padding: '10px 0' }}>
-              No typed-in accounts.
+              Every debt is connected.
             </div>
           ) : (
-            <>
-              <table>
-                <tbody>
-                  {manual.map((a) => (
-                    <tr key={a.id}>
-                      <td>
-                        <div className="sm" style={{ fontWeight: 600 }}>
-                          {accountLabel(a)}
-                        </div>
-                        <div className="tiny muted tnum">{manualSub(a)}</div>
+            <table>
+              <tbody>
+                {debtsTyped.map((a) => (
+                  <tr key={a.id}>
+                    <td>
+                      <div className="sm" style={{ fontWeight: 600 }}>
+                        {accountLabel(a)}
+                      </div>
+                      <div className="tiny muted tnum">{manualSub(a)}</div>
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <input
+                        className="tnum"
+                        style={{ width: 104, padding: '7px 9px', fontSize: 13, textAlign: 'right' }}
+                        inputMode="decimal"
+                        aria-label={`${accountLabel(a)} balance`}
+                        value={values[a.id] ?? ''}
+                        onChange={(e) => setValue(a.id, e.target.value)}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          <div className="tiny muted" style={{ fontWeight: 700, margin: '20px 0 4px' }}>
+            BANK ACCOUNTS
+          </div>
+          <div className="tiny muted" style={{ marginBottom: 6, lineHeight: 1.5 }}>
+            Where money sits and is spent from. Not part of the payoff queue.
+          </div>
+          {banks.length === 0 ? (
+            <div className="tiny muted" style={{ padding: '10px 0' }}>
+              No bank accounts connected.
+            </div>
+          ) : (
+            <table>
+              <tbody>
+                {banks.map((a) => (
+                  <tr key={a.id}>
+                    <td>
+                      <div className="sm" style={{ fontWeight: 600 }}>
+                        {accountLabel(a)}
+                      </div>
+                      <div className="tiny muted tnum">
+                        {a.plaid_account_id ? syncedSub(a) : manualSub(a)}
+                      </div>
+                    </td>
+                    {a.plaid_account_id ? (
+                      <td className="tnum sm" style={{ textAlign: 'right' }}>
+                        {moneyCents(a.balance)}
                       </td>
+                    ) : (
                       <td style={{ textAlign: 'right' }}>
                         <input
                           className="tnum"
-                          style={{
-                            width: 104,
-                            padding: '7px 9px',
-                            fontSize: 13,
-                            textAlign: 'right',
-                          }}
+                          style={{ width: 104, padding: '7px 9px', fontSize: 13, textAlign: 'right' }}
                           inputMode="decimal"
                           aria-label={`${accountLabel(a)} balance`}
                           value={values[a.id] ?? ''}
                           onChange={(e) => setValue(a.id, e.target.value)}
                         />
                       </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
 
+          {manual.length > 0 && (
+            <>
               <button
                 className="btn"
                 style={{ marginTop: 16 }}
