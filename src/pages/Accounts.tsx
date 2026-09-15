@@ -224,20 +224,35 @@ export default function Accounts() {
         Rates and minimums are fixed. Only balances move.
       </div>
 
-      {unlinkedCount > 0 && (
-        <div className="card-panel" style={{ marginBottom: 20 }}>
-          <div className="sm" style={{ fontWeight: 700, marginBottom: 3 }}>
-            <span className="tnum">{unlinkedCount}</span>{' '}
-            {unlinkedCount === 1 ? 'account is' : 'accounts are'} not connected to a bank
-          </div>
-          <div className="tiny muted" style={{ marginBottom: 10, lineHeight: 1.5 }}>
-            Their balances are the figures entered when the plan started, not live ones.
-          </div>
-          <button className="btn" onClick={() => navigate('/link')}>
-            Connect a bank
-          </button>
+      {/*
+        ALWAYS the first action on the page.
+        This panel used to appear only while a seeded debt was still waiting to be
+        connected. Once each was either linked or marked typed-in it disappeared,
+        and the only remaining route to /link was a ghost button below three
+        tables and the save control — present in the build, invisible in practice,
+        which is indistinguishable from missing to anyone trying to add an
+        account. There is no nav entry for /link, so this IS the entry point.
+      */}
+      <div className="card-panel" style={{ marginBottom: 20 }}>
+        <div className="sm" style={{ fontWeight: 700, marginBottom: 3 }}>
+          {unlinkedCount > 0 ? (
+            <>
+              <span className="tnum">{unlinkedCount}</span>{' '}
+              {unlinkedCount === 1 ? 'account is' : 'accounts are'} not connected to a bank
+            </>
+          ) : (
+            'Add an account'
+          )}
         </div>
-      )}
+        <div className="tiny muted" style={{ marginBottom: 10, lineHeight: 1.5 }}>
+          {unlinkedCount > 0
+            ? 'Their balances are the figures entered when the plan started, not live ones.'
+            : 'Connect a bank so its balances update on their own, or check whether one can be reached before using up a connection.'}
+        </div>
+        <button className="btn" onClick={() => navigate('/link')}>
+          Connect a bank
+        </button>
+      </div>
 
       {error && (
         <div className="banner banner--red tiny" style={{ marginBottom: 16 }}>
@@ -396,20 +411,6 @@ export default function Accounts() {
             </>
           )}
 
-          {/* Always reachable. The panel at the top of the page only appears while
-              a seeded debt is still waiting to be connected, so once every one of
-              them was either linked or marked typed-in it vanished — taking the
-              only route to /link with it, at the moment a new account needed
-              adding. Connecting a bank is a standing capability, not a prompt. */}
-          <div style={{ borderTop: '1px solid var(--line)', marginTop: 24, paddingTop: 16 }}>
-            <button className="btn ghost" onClick={() => navigate('/link')}>
-              Connect a bank
-            </button>
-            <div className="tiny muted" style={{ marginTop: 8, textAlign: 'center', lineHeight: 1.5 }}>
-              Adds an account either of us can see. Each bank uses one of a limited
-              number of connections, so link one deliberately.
-            </div>
-          </div>
         </>
       )}
     </div>
