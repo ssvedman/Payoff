@@ -246,7 +246,23 @@ export type Database = {
         Relationships: []
       }
     }
-    Functions: { is_household_member: { Args: Record<string, never>; Returns: boolean } }
+    Functions: {
+      is_household_member: { Args: Record<string, never>; Returns: boolean }
+      /** Inserts a typed-in debt and renumbers the queue by rate. Returns its id. */
+      add_manual_debt: {
+        Args: {
+          p_name: string
+          p_owner: string
+          p_kind: string
+          p_balance: number
+          p_apr?: number | null
+          p_minimum?: number | null
+          p_type_label?: string | null
+          p_institution?: string | null
+        }
+        Returns: string
+      }
+    }
     Enums: { [_ in never]: never }
     CompositeTypes: { [_ in never]: never }
   }
