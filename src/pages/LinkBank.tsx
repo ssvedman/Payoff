@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useData } from '../lib/data'
 import { useAuth } from '../lib/auth'
-import { money, moneyCents, ownerLabel } from '../lib/format'
+import { money, moneyCents, ownerLabel, relativeTime } from '../lib/format'
 import {
   createLinkToken,
   exchangeLink,
@@ -180,6 +180,38 @@ export default function LinkBank() {
     }
   }
 
+  /**
+   * Re-open the mapping step for a connection that already exists.
+   *
+   * Linking ran one way only: a bank was connected, its accounts were offered
+   * once, and if that step was not finished there was no route back to it. The
+   * connection had already been spent, so it sat there feeding nothing, with the
+   * screen offering only to connect ANOTHER bank.
+   *
+   * It is also the way to pick up an account that was not ticked the first time,
+   * or one opened at a bank since. Reading the accounts on a connection costs
+   * nothing and consumes no allowance.
+   */
+  async function reviewItem(existingItemId: string) {
+    setError(null)
+    setPhase('discovering')
+    try {
+      setItemId(existingItemId)
+      // Carry the bank's name off the connection. The field that normally holds
+      // it is only filled while connecting a NEW bank, so re-entering mapping
+      // without this left every account mapped with no issuer recorded.
+      const known = status?.items.find((i) => i.item_id === existingItemId)
+      if (known?.institution) setInstitution(known.institution)
+      const acc = await itemAccounts(existingItemId)
+      setFound(acc.accounts)
+      setChoices({})
+      setPhase('mapping')
+    } catch (e) {
+      setError((e as Error).message)
+      setPhase('idle')
+    }
+  }
+
   /** Manual fallback if the automatic poll missed the completion. */
   async function checkNow() {
     if (!linkToken) return
@@ -284,9 +316,53 @@ export default function LinkBank() {
             Each bank you connect uses one permanently. Removing a connection does not
             give it back, so connect each bank once.
           </div>
+          {/*
+            Every connection, each with a way back into its accounts.
+            A bare list of names was all this used to be, which left a connection
+            that had been made but never finished with no route to finishing it —
+            the allowance spent, nothing flowing, and the page offering only to
+            connect another bank. This is also how an account that was not ticked
+            the first time gets picked up. It costs no allowance.
+          */}
           {status.items.length > 0 && (
-            <div className="tiny muted" style={{ marginTop: 8 }}>
-              Connected: {status.items.map((i) => i.institution).join(', ')}
+            <div style={{ marginTop: 10 }}>
+              {status.items.map((i) => {
+                const live = i.cursor !== null
+                return (
+                  <div
+                    key={i.item_id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                      padding: '7px 0',
+                      borderTop: '1px solid var(--line)',
+                    }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <div className="sm" style={{ fontWeight: 600 }}>{i.institution}</div>
+                      <div className="tiny muted">
+                        {i.status !== 'ok'
+                          ? 'needs signing in again'
+                          : live
+                            ? i.last_synced
+                              ? `updating · synced ${relativeTime(i.last_synced)}`
+                              : 'updating'
+                            : 'connected, but no accounts set up yet'}
+                      </div>
+                    </div>
+                    <button
+                      className="btn ghost"
+                      style={{ width: 'auto', padding: '6px 11px', fontSize: 13, flexShrink: 0 }}
+                      disabled={phase !== 'idle'}
+                      onClick={() => void reviewItem(i.item_id)}
+                    >
+                      {live ? 'Accounts' : 'Set up'}
+                    </button>
+                  </div>
+                )
+              })}
             </div>
           )}
 

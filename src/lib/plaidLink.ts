@@ -33,7 +33,14 @@ export interface LinkStatus {
   env: string
   itemsUsed: number
   itemCap: number
-  items: { item_id: string; institution: string; status: string; last_synced: string | null }[]
+  items: {
+    item_id: string
+    institution: string
+    status: string
+    last_synced: string | null
+    /** 'set' once a transaction cursor exists — i.e. the connection is feeding. */
+    cursor: string | null
+  }[]
   accounts: {
     id: string
     name: string
