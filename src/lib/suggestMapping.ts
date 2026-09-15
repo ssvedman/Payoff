@@ -25,8 +25,14 @@ export type Suggestion =
   | { kind: 'create_checking'; suggestedName: string; reason: string }
   | { kind: 'skip'; reason: string }
 
-/** Plaid type/subtype -> the account kinds it could plausibly be. */
-function compatibleKinds(a: PlaidAccountSummary): string[] {
+/**
+ * Plaid type/subtype -> the account kinds it could plausibly be.
+ *
+ * Exported because the same question decides what the mapping dropdown may
+ * OFFER, not just what it suggests. Listing a tax payment plan and two loans as
+ * candidates for a credit card invites a mapping that can never be right.
+ */
+export function compatibleKinds(a: PlaidAccountSummary): string[] {
   const type = (a.type ?? '').toLowerCase()
   const sub = (a.subtype ?? '').toLowerCase()
 

@@ -130,10 +130,23 @@ export const mapAccount = (accountId: string, plaidAccountId: string, institutio
     institution: institution?.trim(),
   })
 
+/**
+ * Create a SPENDING account — somewhere money sits and is spent from.
+ *
+ * `kind` is a parameter because it was previously hard-coded to checking, which
+ * meant a savings account arrived labelled as a current account and a credit
+ * card could only be added as one too. Debts do not come through here at all:
+ * they go via add_manual_debt, which also places them in the payoff queue.
+ */
 export const createCheckingAccount = (
   name: string,
   plaidAccountId: string,
-  opts: { isBusiness?: boolean; owner?: string; institution?: string } = {},
+  opts: {
+    isBusiness?: boolean
+    owner?: string
+    institution?: string
+    kind?: 'checking' | 'savings'
+  } = {},
 ) =>
   call<{ created: unknown }>('create_checking', {
     name,
@@ -141,6 +154,7 @@ export const createCheckingAccount = (
     is_business: opts.isBusiness ?? false,
     owner: opts.owner ?? 'joint',
     institution: opts.institution?.trim(),
+    kind: opts.kind ?? 'checking',
   })
 
 /**
