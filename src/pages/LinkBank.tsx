@@ -160,7 +160,7 @@ export default function LinkBank() {
   async function finishLink(publicToken: string, inst: string) {
     try {
       setPhase('discovering')
-      const ex = await exchangeLink(publicToken, inst)
+      const ex = await exchangeLink(publicToken, inst.trim())
       setItemId(ex.item_id)
       const acc = await itemAccounts(ex.item_id)
       setFound(acc.accounts)
@@ -202,10 +202,11 @@ export default function LinkBank() {
           // The Edge Function falls back to 'joint' if this is not a known owner.
           await createCheckingAccount(a.official_name || a.name, a.account_id, {
             owner: memberName ? memberName.trim().toLowerCase() : undefined,
+            institution: institution.trim(),
           })
           done.push(`${a.name} added as a spending account`)
         } else {
-          await mapAccount(choice, a.account_id)
+          await mapAccount(choice, a.account_id, institution.trim())
           const s = accounts.find((x) => x.id === choice)
           done.push(`${a.name} linked to ${s ? s.name : 'account'}`)
         }

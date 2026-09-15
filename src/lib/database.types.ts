@@ -41,6 +41,12 @@ export type AccountRow = {
   is_business: boolean
   /** Human description for the UI: "Auto loan", "Savings account". */
   type_label: string | null
+  /**
+   * The issuing bank, shown beside the type label. Stored rather than derived:
+   * an account row carries no item_id, and a typed-in account has no Plaid item
+   * to derive it from at all.
+   */
+  institution: string | null
   created_at: string
 }
 

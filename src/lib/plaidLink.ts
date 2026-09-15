@@ -105,17 +105,22 @@ export const exchangeLink = (publicToken: string, institution: string) =>
 export const itemAccounts = (itemId: string) =>
   call<{ item_id: string; accounts: PlaidAccountSummary[] }>('accounts', { item_id: itemId })
 
-export const mapAccount = (accountId: string, plaidAccountId: string) =>
-  call<{ mapped: string }>('map', { account_id: accountId, plaid_account_id: plaidAccountId })
+export const mapAccount = (accountId: string, plaidAccountId: string, institution?: string) =>
+  call<{ mapped: string }>('map', {
+    account_id: accountId,
+    plaid_account_id: plaidAccountId,
+    institution: institution?.trim(),
+  })
 
 export const createCheckingAccount = (
   name: string,
   plaidAccountId: string,
-  opts: { isBusiness?: boolean; owner?: string } = {},
+  opts: { isBusiness?: boolean; owner?: string; institution?: string } = {},
 ) =>
   call<{ created: unknown }>('create_checking', {
     name,
     plaid_account_id: plaidAccountId,
     is_business: opts.isBusiness ?? false,
     owner: opts.owner ?? 'joint',
+    institution: opts.institution?.trim(),
   })

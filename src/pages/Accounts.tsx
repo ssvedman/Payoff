@@ -167,10 +167,12 @@ export default function Accounts() {
   /**
    * The owner now leads the account name, so it is not repeated here. The type
    * label leads instead: "Auto loan" answers the first question a reader has when
-   * scanning a list of nine debts, which the rate alone does not.
+   * scanning a list of nine debts, which the rate alone does not. The issuing bank
+   * follows it, because two "Credit card" rows are only tellable apart by who
+   * issued them.
    */
   function syncedSub(a: Account) {
-    const parts = [a.type_label]
+    const parts = [a.type_label, a.institution]
     if (a.kind === 'card' || a.kind === 'loan' || a.kind === 'tax') {
       parts.push(apr(a.apr) ?? 'payment plan', `min ${minimum(a.minimum_payment)}`)
     }
@@ -179,7 +181,7 @@ export default function Accounts() {
 
   /** "12.34% · updated 3 days ago" — savings shows its deposit target instead of a rate. */
   function manualSub(a: Account) {
-    const parts: (string | null)[] = [a.type_label]
+    const parts: (string | null)[] = [a.type_label, a.institution]
     if (a.kind === 'savings') {
       if (plan) parts.push(`target ${money(plan.deposit_target)}`)
     } else if (a.kind !== 'checking') {

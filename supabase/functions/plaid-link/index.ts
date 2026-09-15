@@ -215,7 +215,9 @@ Deno.serve(async (req: Request) => {
       /** Exchange the public token, store the access token in Vault only. */
       case 'exchange': {
         const publicToken = body.public_token as string
-        const institution = (body.institution as string) ?? 'unknown'
+        // Trim: the name is typed by hand and a stray space rides through into
+        // every screen that lists connections.
+        const institution = ((body.institution as string) ?? 'unknown').trim() || 'unknown'
         if (!publicToken) return json({ error: 'public_token is required' }, 400)
 
         const res = await plaid('/item/public_token/exchange', { public_token: publicToken })
@@ -266,13 +268,21 @@ Deno.serve(async (req: Request) => {
       case 'map': {
         const accountId = body.account_id as string
         const plaidAccountId = body.plaid_account_id as string
+        // The issuing bank is displayed beside the type label. Only overwrite it
+        // when the caller actually names one, so re-mapping never blanks a value
+        // that was entered by hand.
+        const institution = ((body.institution as string) ?? '').trim()
         if (!accountId || !plaidAccountId) {
           return json({ error: 'account_id and plaid_account_id are required' }, 400)
         }
 
         const { error } = await admin
           .from('accounts')
-          .update({ plaid_account_id: plaidAccountId, is_manual: false })
+          .update({
+            plaid_account_id: plaidAccountId,
+            is_manual: false,
+            ...(institution ? { institution } : {}),
+          })
           .eq('id', accountId)
         if (error) throw new Error(error.message)
 
@@ -284,6 +294,7 @@ Deno.serve(async (req: Request) => {
         const name = body.name as string
         const plaidAccountId = body.plaid_account_id as string
         const isBusiness = Boolean(body.is_business)
+        const institution = ((body.institution as string) ?? '').trim() || null
 
         // owner is CHECK-constrained. Accept only a value the constraint allows,
         // otherwise fall back rather than failing the whole link flow at the last
@@ -310,6 +321,7 @@ Deno.serve(async (req: Request) => {
               plaid_account_id: plaidAccountId,
               is_manual: false,
               is_business: isBusiness,
+              institution,
             },
             { onConflict: 'plaid_account_id' },
           )
