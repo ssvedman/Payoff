@@ -47,6 +47,11 @@ export type AccountRow = {
    * to derive it from at all.
    */
   institution: string | null
+  /**
+   * Statement descriptors that stand in for this account's name, so a payment to
+   * it is recognized as one when the bank's wording shares no word with it.
+   */
+  payment_aliases: string[]
   created_at: string
 }
 

@@ -54,6 +54,9 @@ interface AccountRow {
   is_manual: boolean
   cleared_at: string | null
   is_business: boolean
+  payoff_order: number
+  /** Statement descriptors that stand in for this account's name. */
+  payment_aliases: string[] | null
 }
 
 /**
@@ -148,8 +151,14 @@ Deno.serve(async (req: Request) => {
   const debtAccounts = accounts.filter(
     (a) => a.kind === 'card' || a.kind === 'loan' || a.kind === 'tax',
   )
-  const debtNames = debtAccounts.map((a) => a.name.toLowerCase())
-  const savingsNames = accounts.filter((a) => a.kind === 'savings').map((a) => a.name.toLowerCase())
+  /** An account's name plus every descriptor known to stand in for it. */
+  const namesOf = (a: AccountRow) =>
+    [a.name, ...(a.payment_aliases ?? [])]
+      .filter(Boolean)
+      .map((n) => String(n).toLowerCase())
+
+  const debtNames = debtAccounts.flatMap(namesOf)
+  const savingsNames = accounts.filter((a) => a.kind === 'savings').flatMap(namesOf)
 
   // The current target: lowest payoff_order still owing. Only payments to this
   // account count toward the attack fund; payments to the others are minimums.
@@ -157,10 +166,11 @@ Deno.serve(async (req: Request) => {
   const balanceById = new Map(
     (currentBalances ?? []).map((b: Record<string, unknown>) => [b.account_id as string, Number(b.balance)]),
   )
-  const targetName =
+  const targetAccount =
     [...debtAccounts]
-      .sort((x, y) => (x as unknown as { payoff_order: number }).payoff_order - (y as unknown as { payoff_order: number }).payoff_order)
-      .find((a) => !a.cleared_at && (balanceById.get(a.id) ?? Infinity) > 0)?.name ?? null
+      .sort((x, y) => x.payoff_order - y.payoff_order)
+      .find((a) => !a.cleared_at && (balanceById.get(a.id) ?? Infinity) > 0) ?? null
+  const targetNames = targetAccount ? namesOf(targetAccount) : []
 
   for (const item of itemRows ?? []) {
     const itemId = item.item_id as string
@@ -284,7 +294,7 @@ Deno.serve(async (req: Request) => {
             plaidCategory: detailed,
             amount: t.amount,
             accountKind: acct.kind,
-            targetName,
+            targetNames,
             debtNames,
             savingsNames,
             rules,

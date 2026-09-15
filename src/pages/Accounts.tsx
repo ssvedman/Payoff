@@ -376,6 +376,21 @@ export default function Accounts() {
               )}
             </>
           )}
+
+          {/* Always reachable. The panel at the top of the page only appears while
+              a seeded debt is still waiting to be connected, so once every one of
+              them was either linked or marked typed-in it vanished — taking the
+              only route to /link with it, at the moment a new account needed
+              adding. Connecting a bank is a standing capability, not a prompt. */}
+          <div style={{ borderTop: '1px solid var(--line)', marginTop: 24, paddingTop: 16 }}>
+            <button className="btn ghost" onClick={() => navigate('/link')}>
+              Connect a bank
+            </button>
+            <div className="tiny muted" style={{ marginTop: 8, textAlign: 'center', lineHeight: 1.5 }}>
+              Adds an account either of us can see. Each bank uses one of a limited
+              number of connections, so link one deliberately.
+            </div>
+          </div>
         </>
       )}
     </div>

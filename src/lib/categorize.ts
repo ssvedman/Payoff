@@ -123,12 +123,16 @@ function namesAccount(haystack: string, accountName: string): boolean {
   return haystack.includes(n)
 }
 
-const PAYMENT_WORDS = /\b(payment|pmt|autopay|auto pay|bill pay|billpay|epay|ach|xfer|transfer|web pymt)\b/
+const PAYMENT_WORDS = /\b(payment|pmt|pymt|pymnt|autopay|auto pay|bill pay|billpay|epay|ach|xfer|transfer)\b/
 
 function looksLikePayment(haystack: string, plaidCategory: string | null): boolean {
   const primary = primaryOf(plaidCategory)
   if (primary === 'LOAN_PAYMENTS') return true
   if (primary === 'TRANSFER_OUT' || primary === 'TRANSFER_IN') return true
+  // An instalment to the IRS is a payment against a tracked tax debt, but Plaid
+  // files it under GOVERNMENT_AND_NON_PROFIT and the descriptor
+  // ("ORIG CO NAME:IRS ...") carries no payment word at all.
+  if ((plaidCategory ?? '').toUpperCase() === 'GOVERNMENT_AND_NON_PROFIT_TAX_PAYMENT') return true
   return PAYMENT_WORDS.test(haystack)
 }
 
@@ -141,11 +145,14 @@ export interface CategorizeArgs {
   /** The kind of the account this transaction sits on. */
   accountKind: string
   /**
-   * The account currently being attacked — lowest payoff_order still owing.
-   * Only payments to THIS account count toward the attack fund.
+   * The account currently being attacked — lowest payoff_order still owing —
+   * as its name plus any payment_aliases. Only payments to THIS account count
+   * toward the attack fund. It is a list because a bank's statement descriptor
+   * rarely contains the friendly name an account is filed under here, so the
+   * aliases carry the descriptors that stand in for it.
    */
-  targetName: string | null
-  /** Names of all our debt accounts, for spotting minimum payments. */
+  targetNames: string[]
+  /** Names AND aliases of all our debt accounts, for spotting minimum payments. */
   debtNames: string[]
   savingsNames: string[]
   rules: RuleLike[]
@@ -186,7 +193,7 @@ export function categorize(a: CategorizeArgs): { bucket: Bucket; source: 'auto' 
       // 'attack' would both inflate the attack total past its target (silencing the
       // attack_missing alert, the one alert whose job is to catch a missed payment)
       // and leave the fixed line permanently unfillable.
-      if (a.targetName && namesAccount(haystack, a.targetName)) {
+      if (a.targetNames.some((n) => namesAccount(haystack, n))) {
         return { bucket: 'attack', source: 'auto' }
       }
       if (a.debtNames.some((n) => namesAccount(haystack, n))) {

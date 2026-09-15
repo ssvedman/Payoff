@@ -7,6 +7,11 @@
 #
 # Patterns live in .githooks/pii-patterns, which is gitignored along with
 # everything else that names the household.
+#
+# Scope is LOCAL refs (--branches --tags), never --all. --all takes in
+# refs/remotes too, so the moment a leak reached the remote the hook would keep
+# flagging the remote's copy and refuse the force-push that removes it — the
+# remediation deadlocking on the very thing it was there to remediate.
 
 PATTERNS_FILE="$(git rev-parse --show-toplevel)/.githooks/pii-patterns"
 [ -f "$PATTERNS_FILE" ] || exit 0
@@ -15,7 +20,7 @@ FAIL=0
 while IFS= read -r pat; do
   [ -z "$pat" ] && continue
   case "$pat" in \#*) continue ;; esac
-  for c in $(git rev-list --all); do
+  for c in $(git rev-list --branches --tags); do
     hits=$(git grep -l -i -F "$pat" "$c" -- 2>/dev/null | sed "s|^$c:||" | grep -v '^\.gitignore$' | grep -v '^\.githooks/')
     if [ -n "$hits" ]; then
       echo "pre-push: BLOCKED — '$pat' found in commit $(git rev-parse --short "$c"):"
@@ -25,10 +30,26 @@ while IFS= read -r pat; do
   done
 done < "$PATTERNS_FILE"
 
+# A commit MESSAGE is not part of any tree either, so the grep above cannot see
+# it. A message is published exactly as widely as the files are, and explaining a
+# categorization fix is precisely the kind of commit that wants to quote a real
+# account name to justify itself. Check messages against the same patterns.
+while IFS= read -r pat; do
+  [ -z "$pat" ] && continue
+  case "$pat" in \#*) continue ;; esac
+  for c in $(git rev-list --branches --tags); do
+    if git log -1 --format='%B' "$c" | grep -qiF "$pat"; then
+      echo "pre-push: BLOCKED — '$pat' appears in the MESSAGE of commit $(git rev-parse --short "$c")."
+      echo "pre-push: Rewrite the message; the files being clean is not enough."
+      FAIL=1
+    fi
+  done
+done < "$PATTERNS_FILE"
+
 # Commit IDENTITY is not part of any tree, so the grep above cannot see it. The
 # PII audit found a real personal email published as the author of every commit,
 # which no file edit would have fixed. Check it explicitly.
-for c in $(git rev-list --all); do
+for c in $(git rev-list --branches --tags); do
   for who in "%ae" "%ce"; do
     addr=$(git log -1 --format="$who" "$c")
     case "$addr" in
