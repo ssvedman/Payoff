@@ -116,16 +116,36 @@ Deno.serve(async (req: Request) => {
     transactionsRemoved: 0,
     liabilitiesUpdated: 0,
     cleared: [] as string[],
+    reopened: [] as string[],
+    target: null as string | null,
     errors: [] as string[],
   }
 
-  const [{ data: itemRows }, { data: accountRows }, { data: ruleRows }, { data: lineRuleRows }] =
-    await Promise.all([
-      admin.from('plaid_items').select('*'),
-      admin.from('accounts').select('*'),
-      admin.from('merchant_rules').select('match_text, bucket, budget_line_id'),
-      admin.from('budget_line_rules').select('plaid_prefix, budget_line_id'),
-    ])
+  const [itemsRes, accountsRes, rulesRes, lineRulesRes] = await Promise.all([
+    admin.from('plaid_items').select('*'),
+    admin.from('accounts').select('*'),
+    admin.from('merchant_rules').select('match_text, bucket, budget_line_id'),
+    admin.from('budget_line_rules').select('plaid_prefix, budget_line_id'),
+  ])
+
+  // postgrest-js resolves with {data: null, error} rather than rejecting, so a
+  // failed read here used to sail straight through: `accounts` came back empty,
+  // every transaction looked like it belonged to an unmapped account, nothing was
+  // written — and the cursor still advanced past all of it. Plaid never re-emits
+  // a transaction the cursor has passed, so a transient database blip silently
+  // destroyed history. Refuse to run at all instead.
+  const readErr = itemsRes.error ?? accountsRes.error ?? rulesRes.error ?? lineRulesRes.error
+  if (readErr) {
+    return new Response(
+      JSON.stringify({ error: `aborted before touching Plaid: ${readErr.message}` }, null, 2),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    )
+  }
+
+  const itemRows = itemsRes.data
+  const accountRows = accountsRes.data
+  const ruleRows = rulesRes.data
+  const lineRuleRows = lineRulesRes.data
 
   /**
    * Which budget line a Plaid category counts against. Longest matching prefix
@@ -148,9 +168,10 @@ Deno.serve(async (req: Request) => {
   const rules = (ruleRows ?? []) as RuleLike[]
   const byPlaidId = new Map(accounts.filter((a) => a.plaid_account_id).map((a) => [a.plaid_account_id!, a]))
 
-  const debtAccounts = accounts.filter(
-    (a) => a.kind === 'card' || a.kind === 'loan' || a.kind === 'tax',
-  )
+  /** One definition, so the balance loop and the queue cannot drift apart. */
+  const isDebtKind = (k: string) => k === 'card' || k === 'loan' || k === 'tax'
+
+  const debtAccounts = accounts.filter((a) => isDebtKind(a.kind))
   /** An account's name plus every descriptor known to stand in for it. */
   const namesOf = (a: AccountRow) =>
     [a.name, ...(a.payment_aliases ?? [])]
@@ -160,21 +181,70 @@ Deno.serve(async (req: Request) => {
   const debtNames = debtAccounts.flatMap(namesOf)
   const savingsNames = accounts.filter((a) => a.kind === 'savings').flatMap(namesOf)
 
-  // The current target: lowest payoff_order still owing. Only payments to this
-  // account count toward the attack fund; payments to the others are minimums.
-  const { data: currentBalances } = await admin.from('account_balance_current').select('*')
-  const balanceById = new Map(
-    (currentBalances ?? []).map((b: Record<string, unknown>) => [b.account_id as string, Number(b.balance)]),
-  )
-  const targetAccount =
-    [...debtAccounts]
-      .sort((x, y) => x.payoff_order - y.payoff_order)
-      .find((a) => !a.cleared_at && (balanceById.get(a.id) ?? Infinity) > 0) ?? null
-  const targetNames = targetAccount ? namesOf(targetAccount) : []
+  /**
+   * The current target: lowest payoff_order still owing.
+   *
+   * Deliberately NOT computed yet. Deriving it here would read the balances left
+   * by the PREVIOUS run, so on the night a target is finally paid off every
+   * payment to its successor would be filed as an ordinary minimum — and nothing
+   * ever re-categorizes a stored row, so that misfiling is permanent. The run is
+   * therefore split in two: every balance is written first, the target is derived
+   * from the result, and only then are transactions categorized.
+   */
+  const deriveTarget = async () => {
+    const { data: fresh } = await admin.from('account_balance_current').select('*')
+    const byId = new Map(
+      (fresh ?? []).map((b: Record<string, unknown>) => [b.account_id as string, Number(b.balance)]),
+    )
+    // cleared_at is read off the in-memory rows, which pass 1 keeps current.
+    const t =
+      [...debtAccounts]
+        .sort((x, y) => x.payoff_order - y.payoff_order)
+        .find((a) => !a.cleared_at && (byId.get(a.id) ?? Infinity) > 0) ?? null
+    return { target: t, names: t ? namesOf(t) : [] }
+  }
 
+  /** Shared by both passes, so an item fails the same way whichever one hit it. */
+  async function handleItemError(
+    item: Record<string, unknown>,
+    itemReport: Record<string, unknown>,
+    err: unknown,
+  ) {
+    const itemId = item.item_id as string
+    const e = err as Error
+    const code = err instanceof PlaidError ? err.code : 'ERROR'
+
+    // ITEM_LOGIN_REQUIRED means the bank needs re-authentication. Mark it stale
+    // and notify once — never retry in a loop.
+    if (code === 'ITEM_LOGIN_REQUIRED') {
+      // Notify only on the transition into the stale state. Without this check
+      // the same alert fires every night until someone re-links.
+      const alreadyStale = item.status === 'login_required'
+      await admin.from('plaid_items').update({ status: 'login_required' }).eq('item_id', itemId)
+      if (!alreadyStale) {
+        await notify(
+          'item_login_required',
+          'Bank connection needs attention',
+          `${item.institution} needs to be reconnected before it can sync again.`,
+        )
+      }
+    } else {
+      await admin.from('plaid_items').update({ status: 'error' }).eq('item_id', itemId)
+    }
+
+    itemReport.status = code
+    itemReport.error = e.message
+    report.errors.push(`${item.institution}: ${code}`)
+  }
+
+  const reportByItem = new Map<string, Record<string, unknown>>()
+
+  // ================= PASS 1: balances, liabilities, cleared_at =================
   for (const item of itemRows ?? []) {
     const itemId = item.item_id as string
     const itemReport: Record<string, unknown> = { itemId, institution: item.institution }
+    reportByItem.set(itemId, itemReport)
+    report.items.push(itemReport)
 
     try {
       const { data: token, error: tokenErr } = await admin.rpc('plaid_token_get', {
@@ -202,10 +272,32 @@ Deno.serve(async (req: Request) => {
           source: 'plaid',
         })
 
-        if (current <= 0 && !acct.cleared_at) {
-          await admin.from('accounts').update({ cleared_at: asOf }).eq('id', acct.id)
-          report.cleared.push(acct.name)
-          await notify('account_cleared', 'Account cleared', `${acct.name} reached zero.`)
+        // Only a DEBT can clear. byPlaidId holds every mapped account, so this
+        // branch used to stamp cleared_at on a checking or savings account the
+        // moment it hit zero and push "Account cleared" about a current account
+        // running empty — the opposite of good news.
+        if (isDebtKind(acct.kind)) {
+          if (current <= 0 && !acct.cleared_at) {
+            await admin.from('accounts').update({ cleared_at: asOf }).eq('id', acct.id)
+            acct.cleared_at = asOf
+            report.cleared.push(acct.name)
+            await notify('account_cleared', 'Account cleared', `${acct.name} reached zero.`)
+          } else if (current > 0 && acct.cleared_at) {
+            // Release the latch. cleared_at was only ever set, never reset, and
+            // isCleared() treats any non-null value as cleared forever — so a card
+            // paid to zero and then used again dropped out of Total owed, counted
+            // as already repaid, and was handed to the simulation as a zero
+            // balance it would never pay off. The household was told it owed less
+            // than it did, permanently.
+            await admin.from('accounts').update({ cleared_at: null }).eq('id', acct.id)
+            acct.cleared_at = null
+            report.reopened.push(acct.name)
+            await notify(
+              'balance_up',
+              'Account no longer clear',
+              `${acct.name} has a balance again: ${current.toFixed(2)}.`,
+            )
+          }
         }
       }
 
@@ -243,8 +335,14 @@ Deno.serve(async (req: Request) => {
           }
 
           if (Object.keys(patch).length) {
-            await admin.from('accounts').update(patch).eq('id', acct.id)
-            report.liabilitiesUpdated++
+            const { error: liabErr } = await admin.from('accounts').update(patch).eq('id', acct.id)
+            // Counting an unchecked write as a success reported an APR refresh
+            // that never happened.
+            if (liabErr) {
+              report.errors.push(`liability write failed for ${acct.name}: ${liabErr.message}`)
+            } else {
+              report.liabilitiesUpdated++
+            }
           }
         }
       } catch (err) {
@@ -255,6 +353,32 @@ Deno.serve(async (req: Request) => {
           itemReport.liabilities = `skipped: ${(err as Error).message}`
         }
       }
+
+      itemReport.balancesDone = true
+    } catch (err) {
+      await handleItemError(item, itemReport, err)
+    }
+  }
+
+  // Every balance for every item is now written, so the queue reflects tonight's
+  // reality rather than last night's. Derive the target from THAT.
+  const { target: targetAccount, names: targetNames } = await deriveTarget()
+  report.target = targetAccount ? targetAccount.name : null
+
+  // ===================== PASS 2: transactions and cursor ======================
+  for (const item of itemRows ?? []) {
+    const itemId = item.item_id as string
+    const itemReport = reportByItem.get(itemId)!
+
+    // An item that failed pass 1 has already been marked and notified about;
+    // draining its cursor now would burn history against a broken connection.
+    if (!itemReport.balancesDone) continue
+
+    try {
+      const { data: token, error: tokenErr } = await admin.rpc('plaid_token_get', {
+        p_item_id: itemId,
+      })
+      if (tokenErr || !token) throw new Error(`no access token in vault for ${itemId}`)
 
       // ---------- transactions ----------
       const delta = await transactionsSyncAll(token as string, (item.cursor as string | null) ?? null)
@@ -351,41 +475,37 @@ Deno.serve(async (req: Request) => {
         report.transactionsRemoved += delta.removed.length
       }
 
-      await admin
-        .from('plaid_items')
-        .update({ cursor: delta.cursor, status: 'ok', last_synced: new Date().toISOString() })
-        .eq('item_id', itemId)
+      // Advancing the cursor is irreversible: Plaid never re-emits a transaction
+      // the cursor has passed, and the window requested at link time cannot be
+      // widened afterwards. An item whose accounts have not been mapped yet would
+      // otherwise have its entire history drained into `incoming`, filtered away
+      // to nothing, and burnt — which is exactly what happens when a bank is
+      // linked one day and its accounts mapped the next, with the nightly run in
+      // between. Hold the cursor until there is somewhere to put the data.
+      // Does THIS item have anything mapped? Asking whether any account anywhere
+      // is mapped would always be true and defeat the guard. Ask the delta, which
+      // names the accounts the item actually has.
+      const seenOnItem = new Set([...delta.added, ...delta.modified].map((t) => t.account_id))
+      const holdCursor = seenOnItem.size > 0 && ![...seenOnItem].some((id) => byPlaidId.has(id))
+
+      if (holdCursor) {
+        itemReport.cursor = 'held — nothing on this item is mapped yet, so its history is kept for a later run'
+        await admin
+          .from('plaid_items')
+          .update({ status: 'ok', last_synced: new Date().toISOString() })
+          .eq('item_id', itemId)
+      } else {
+        await admin
+          .from('plaid_items')
+          .update({ cursor: delta.cursor, status: 'ok', last_synced: new Date().toISOString() })
+          .eq('item_id', itemId)
+      }
 
       itemReport.transactions = { added: delta.added.length, modified: delta.modified.length, removed: delta.removed.length }
       itemReport.status = 'ok'
     } catch (err) {
-      const e = err as Error
-      const code = err instanceof PlaidError ? err.code : 'ERROR'
-
-      // ITEM_LOGIN_REQUIRED means the bank needs re-authentication. Mark it stale
-      // and notify once — never retry in a loop.
-      if (code === 'ITEM_LOGIN_REQUIRED') {
-        // Notify only on the transition into the stale state. Without this check
-        // the same alert fires every night until someone re-links.
-        const alreadyStale = item.status === 'login_required'
-        await admin.from('plaid_items').update({ status: 'login_required' }).eq('item_id', itemId)
-        if (!alreadyStale) {
-          await notify(
-            'item_login_required',
-            'Bank connection needs attention',
-            `${item.institution} needs to be reconnected before it can sync again.`,
-          )
-        }
-      } else {
-        await admin.from('plaid_items').update({ status: 'error' }).eq('item_id', itemId)
-      }
-
-      itemReport.status = code
-      itemReport.error = e.message
-      report.errors.push(`${item.institution}: ${code}`)
+      await handleItemError(item, itemReport, err)
     }
-
-    report.items.push(itemReport)
   }
 
   // check-alerts runs after sync. pg_net is fire-and-forget so two offset cron

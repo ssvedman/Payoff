@@ -63,6 +63,8 @@ interface Alert {
   body: string
   /** Dedupe key — an alert already logged with this key is not resent. */
   dedupe: string
+  /** For an alert queued by sync: the alert_log row to mark done once delivered. */
+  pendingRowId?: number
 }
 
 /**
@@ -79,7 +81,19 @@ async function deliver(alert: Alert): Promise<number> {
 
   const prefByUser = new Map((prefs ?? []).map((p) => [p.user_id as string, p.enabled as boolean]))
 
-  const { data: subs } = await admin.from('push_subscriptions').select('*')
+  // Only household members. The subscription table's RLS is keyed on
+  // user_id = auth.uid(), which stops one user reading another's row but says
+  // nothing about whether they are still in the household — so removing someone
+  // from household_members revoked their access to the app while their device
+  // kept receiving balances and account names by push.
+  const { data: members } = await admin.from('household_members').select('user_id')
+  const memberIds = (members ?? []).map((m) => m.user_id as string)
+  if (memberIds.length === 0) return 0
+
+  const { data: subs } = await admin
+    .from('push_subscriptions')
+    .select('*')
+    .in('user_id', memberIds)
 
   let sent = 0
   for (const sub of subs ?? []) {
@@ -136,14 +150,33 @@ Deno.serve(async (req: Request) => {
   const now = easternNow()
   const alerts: Alert[] = []
 
-  const [{ data: accounts }, { data: balances }, { data: plan }, { data: txns }, { data: lines }] =
-    await Promise.all([
-      admin.from('accounts').select('*').order('payoff_order'),
-      admin.from('account_balance_current').select('*'),
-      admin.from('plan_settings').select('*').eq('id', 1).maybeSingle(),
-      admin.from('transactions').select('*').gte('posted_on', now.monthStart).lte('posted_on', now.iso),
-      admin.from('budget_lines').select('*'),
-    ])
+  const [accountsRes, balancesRes, planRes, txnsRes, linesRes] = await Promise.all([
+    admin.from('accounts').select('*').order('payoff_order'),
+    admin.from('account_balance_current').select('*'),
+    admin.from('plan_settings').select('*').eq('id', 1).maybeSingle(),
+    admin.from('transactions').select('*').gte('posted_on', now.monthStart).lte('posted_on', now.iso),
+    admin.from('budget_lines').select('*'),
+  ])
+
+  // postgrest-js resolves with {data: null, error} instead of rejecting. Every
+  // alert here is an ABSENCE test — "no attack payment seen", "balance not
+  // updated" — so a failed read looks exactly like the condition being alerted
+  // on. A database blip would have pushed "Attack payment not seen" at a
+  // household that had paid on time. Say nothing rather than say something false.
+  const readErr =
+    accountsRes.error ?? balancesRes.error ?? planRes.error ?? txnsRes.error ?? linesRes.error
+  if (readErr) {
+    return new Response(
+      JSON.stringify({ error: `no alerts evaluated: ${readErr.message}` }, null, 2),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    )
+  }
+
+  const accounts = accountsRes.data
+  const balances = balancesRes.data
+  const plan = planRes.data
+  const txns = txnsRes.data
+  const lines = linesRes.data
 
   const balanceBy = new Map((balances ?? []).map((b) => [b.account_id as string, b]))
   const debts = (accounts ?? []).filter(
@@ -190,8 +223,21 @@ Deno.serve(async (req: Request) => {
   // ---------- attack_missing: nothing reached the target, past the 15th ----------
   if (target && now.day > 15 && plan) {
     const attackFund = Number(plan.attack_fund)
+    // Only payments that actually named this target. Summing every 'attack' row
+    // in the month counted payments made to the PREVIOUS target before it
+    // cleared, so the month a target is paid off reports the attack fund as
+    // already delivered to its successor and the alert never fires.
+    const names = [target.name, ...((target.payment_aliases as string[] | null) ?? [])]
+      .filter(Boolean)
+      .map((n) => String(n).trim().toLowerCase())
+      .filter((n) => n.length >= 4)
+
     const reached = (txns ?? [])
-      .filter((t) => t.bucket === 'attack')
+      .filter((t) => {
+        if (t.bucket !== 'attack') return false
+        const hay = `${t.name ?? ''} ${t.merchant_name ?? ''}`.toLowerCase()
+        return names.some((n) => hay.includes(n))
+      })
       .reduce((s, t) => s + Number(t.amount), 0)
 
     if (reached < attackFund) {
@@ -246,7 +292,11 @@ Deno.serve(async (req: Request) => {
   // a reminder that arrives every day is one that gets swiped away every day.
   const STALE_DAYS = 30
   for (const a of withBalance) {
-    if (!a.is_manual) continue
+    // The reality gate, not the intent one. is_manual records what someone meant;
+    // an unset plaid_account_id is what the account actually is. Several debts
+    // the UI itself labels "not connected to a bank" carry is_manual = false, so
+    // gating on intent skipped exactly the accounts this alert exists for.
+    if (a.plaid_account_id) continue
     const b = balanceBy.get(a.id as string)
     const asOf = b?.as_of as string | undefined
     if (!asOf) continue
@@ -268,21 +318,27 @@ Deno.serve(async (req: Request) => {
     .from('alert_log')
     .select('*')
     .in('alert_type', ['account_cleared', 'item_login_required'])
-    .gte('sent_at', `${now.iso}T00:00:00Z`)
+    // Seven days, not today. A row queued by sync is only picked up while this
+    // window contains it, so a single failed dispatch — or a queue written just
+    // before midnight Eastern, since sent_at is UTC — dropped the alert forever.
+    // `pending` is the real guard against re-sending; the window is only a bound.
+    .gte('sent_at', new Date(Date.now() - 7 * 86400000).toISOString())
 
   for (const row of pendingCleared ?? []) {
     const payload = (row.payload ?? {}) as { title?: string; body?: string; pending?: boolean }
     if (!payload.pending) continue
+    // Carry the row id rather than clearing `pending` here. Clearing it at
+    // collection time marked the alert done before a single delivery had been
+    // attempted, so anything that went wrong in deliver() consumed the alert
+    // silently — the one queued alert that matters, an account reaching zero,
+    // was the easiest to lose.
     alerts.push({
       type: row.alert_type as string,
       title: payload.title ?? 'Payoff',
       body: payload.body ?? '',
       dedupe: `${row.alert_type}:${row.id}`,
+      pendingRowId: row.id as number,
     })
-    await admin
-      .from('alert_log')
-      .update({ payload: { ...payload, pending: false } })
-      .eq('id', row.id as number)
   }
 
   // ---------- monthly_summary: 1st of the month, opt-in ----------
@@ -318,11 +374,38 @@ Deno.serve(async (req: Request) => {
     }
 
     const sent = await deliver(alert)
+
+    // Only now is the queued row done with. Retried on the next run otherwise.
+    if (alert.pendingRowId !== undefined && sent > 0) {
+      const { data: row } = await admin
+        .from('alert_log')
+        .select('payload')
+        .eq('id', alert.pendingRowId)
+        .maybeSingle()
+      const payload = (row?.payload ?? {}) as Record<string, unknown>
+      await admin
+        .from('alert_log')
+        .update({ payload: { ...payload, pending: false } })
+        .eq('id', alert.pendingRowId)
+    }
+
+    // Record the dedupe key ONLY if something was actually delivered. Logging it
+    // regardless meant the first run — before any device had registered, or while
+    // VAPID was unset, or during a push outage — permanently suppressed that
+    // alert: the key was burnt, and every later run skipped it as "already sent"
+    // even though nobody was ever told. An alert nobody received has not been
+    // sent, and the log should not claim otherwise.
     await admin.from('alert_log').insert({
       alert_type: alert.type,
-      payload: { title: alert.title, body: alert.body, dedupe: alert.dedupe, sent },
+      payload: {
+        title: alert.title,
+        body: alert.body,
+        sent,
+        // Absent when sent === 0, so the next run re-evaluates it.
+        ...(sent > 0 ? { dedupe: alert.dedupe } : { undelivered: alert.dedupe }),
+      },
     })
-    results.push({ type: alert.type, sent, body: alert.body })
+    results.push({ type: alert.type, sent, body: alert.body, retryable: sent === 0 })
   }
 
   return new Response(

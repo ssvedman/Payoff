@@ -104,6 +104,16 @@ export default function History() {
   const last = owedSeries[owedSeries.length - 1]
   const change = first && last ? last.value - first.value : 0
   const weeksTracked = owedSeries.length
+  /**
+   * The elapsed span, not the number of readings. Those are the same only while
+   * no week is missing — and weeks ARE missing now, since only fully covered
+   * ones are plotted. Counting rows would report "over 3 weeks" for a change
+   * that actually took three months.
+   */
+  const weeksSpanned =
+    first && last
+      ? Math.max(1, Math.round((Date.parse(last.date) - Date.parse(first.date)) / 604800000))
+      : 0
 
   if (weeks === null || accountsLoading) {
     return (
@@ -173,7 +183,7 @@ export default function History() {
               {change <= 0 ? '−' : '+'}
               {money(Math.abs(change))}
             </span>{' '}
-            over {weeksTracked} weeks
+            over {weeksSpanned} {weeksSpanned === 1 ? 'week' : 'weeks'}
           </>
         ) : (
           'first reading'

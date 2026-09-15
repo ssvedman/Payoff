@@ -107,7 +107,11 @@ export default function Home() {
     return out
   }, [debts, target, totals])
 
-  if (loading) return <HomeSkeleton />
+  // Skeleton on the FIRST load only. `loading` flips back on for every refresh —
+  // a tab focus, a token refresh, a save elsewhere — and swapping a screen full
+  // of real figures for placeholders at those moments reads as the app breaking,
+  // not as it working. Accounts already draws this distinction; Home did not.
+  if (loading && debts.length === 0) return <HomeSkeleton />
 
   // Without plan settings there is nothing to derive. Report it rather than
   // holding the skeleton forever — the error banner below is unreachable
@@ -143,7 +147,13 @@ export default function Home() {
     : 0
 
   const clearEvent = target ? plan.sim.events.find((e) => e.id === target.id) ?? null : null
-  const clearsThisMonth = target ? plan.attackFund + targetMin >= target.balance : false
+
+  // Read the simulation rather than re-deriving a rule of thumb next to it. The
+  // old test compared this month's payment against the bare balance, ignoring
+  // the interest that will post before it clears — so it could print "on track
+  // to clear this month" directly above the simulation's own "projected to clear
+  // in 2 months", with the two disagreeing on screen at the same time.
+  const clearsThisMonth = clearEvent?.month === 1
   const targetOutlook = !target
     ? null
     : clearsThisMonth
@@ -158,10 +168,16 @@ export default function Home() {
    * what it promised every month still shows a nearly empty bar for years, which
    * reports failure at something being done correctly.
    *
-   * Month N expects N deposits. Capped at the final target, so the bar completes
-   * rather than running past 100% once the goal is met.
+   * Month N expects N-1 deposits, not N. monthNumber() returns 1 on the day the
+   * plan starts, so multiplying by it counted the first month's deposit as
+   * already overdue before a single day had passed — the plan opened reporting a
+   * shortfall. The deposit for the month in progress is not late until the month
+   * is over.
    */
-  const pacedTarget = Math.min(monthNo * plan.monthlySavings, plan.depositTarget)
+  const pacedTarget = Math.min(
+    Math.max(0, monthNo - 1) * plan.monthlySavings,
+    plan.depositTarget,
+  )
   const savingsPct = pacedTarget > 0 ? clamp01(plan.savingsBalance / pacedTarget) : 0
   const savingsAhead = plan.savingsBalance - pacedTarget
 
@@ -393,7 +409,7 @@ export default function Home() {
         </div>
         <Bar pct={savingsPct} color="var(--green)" />
         <div className="tiny muted tnum" style={{ marginTop: 6 }}>
-          {money(pacedTarget)} expected by month {monthNo} ·{' '}
+          {money(pacedTarget)} expected by now ·{' '}
           <span style={{ color: savingsAhead >= 0 ? 'var(--green)' : 'var(--red)' }}>
             {savingsAhead >= 0 ? '+' : '−'}
             {money(Math.abs(savingsAhead))}

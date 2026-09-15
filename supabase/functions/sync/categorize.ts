@@ -207,6 +207,18 @@ export function categorize(a: CategorizeArgs): { bucket: Bucket; source: 'auto' 
     }
 
     // A transfer into the savings account.
+    //
+    // The name test alone could never fire: a bank descriptor reads
+    // "Online Transfer to SAV ...4463", never the friendly name the account is
+    // filed under here, so the bucket was unreachable and the savings row on
+    // /month sat at zero for good. Plaid's own category is the reliable signal.
+    // The accountKind guard keeps money leaving the savings account out of it.
+    if (
+      a.accountKind !== 'savings' &&
+      (a.plaidCategory ?? '').toUpperCase() === 'TRANSFER_OUT_SAVINGS'
+    ) {
+      return { bucket: 'savings', source: 'auto' }
+    }
     if (a.savingsNames.some((n) => namesAccount(haystack, n))) {
       return { bucket: 'savings', source: 'auto' }
     }
