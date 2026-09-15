@@ -289,11 +289,13 @@ Deno.serve(async (req: Request) => {
   }
 
   // ---------- balance_stale: a typed-in figure has gone unrefreshed ----------
-  // Five debts cannot be reached by Plaid at all, so their balances are only ever
-  // as good as the last time somebody typed one in — and every figure derived from
-  // them, including the payoff projection and the headline total, is exactly that
-  // stale without saying so. Nagging once a month per account rather than nightly:
-  // a reminder that arrives every day is one that gets swiped away every day.
+  // A debt Plaid cannot reach is only ever as good as the last time somebody
+  // typed a figure in, and everything derived from it is silently that old.
+  // An account carrying a repayment SCHEDULE is exempt: its balance is
+  // recomputed nightly from the contract, so there is nothing to nag about.
+  const { data: scheduled } = await admin.from('debt_schedules').select('account_id')
+  const hasSchedule = new Set((scheduled ?? []).map((s) => s.account_id as string))
+
   const STALE_DAYS = 30
   for (const a of withBalance) {
     // The reality gate, not the intent one. is_manual records what someone meant;
@@ -301,6 +303,7 @@ Deno.serve(async (req: Request) => {
     // the UI itself labels "not connected to a bank" carry is_manual = false, so
     // gating on intent skipped exactly the accounts this alert exists for.
     if (a.plaid_account_id) continue
+    if (hasSchedule.has(a.id as string)) continue
     const b = balanceBy.get(a.id as string)
     const asOf = b?.as_of as string | undefined
     if (!asOf) continue
