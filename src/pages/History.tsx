@@ -24,12 +24,17 @@ interface WeekRow {
   total_owed: number | string | null
   savings: number | string | null
   open_debts: number | null
+  /** False when total_owed is missing an account rather than short one. */
+  fully_covered: boolean
+  debts_covered: number
+  debts_total: number
 }
 
 interface AccountWeekRow {
   week_start: string
   account_id: string
-  balance: number | string
+  balance: number | string | null
+  covered: boolean
 }
 
 const num = (v: unknown) => (typeof v === 'number' ? v : Number(v ?? 0))
@@ -47,7 +52,10 @@ export default function History() {
     void (async () => {
       const [totals, accts] = await Promise.all([
         supabase.from('debt_history_weekly').select('*').order('week_start'),
-        supabase.from('account_balance_weekly').select('week_start, account_id, balance').order('week_start'),
+        supabase
+          .from('account_balance_weekly')
+          .select('week_start, account_id, balance, covered')
+          .order('week_start'),
       ])
       if (!active) return
       if (totals.error) {
@@ -63,19 +71,28 @@ export default function History() {
     }
   }, [])
 
+  /**
+   * Only weeks where every debt has a reading. A week missing an account is not a
+   * week the total fell — plotting it would draw a cliff out of absent data, and
+   * downward is the direction a reader is least likely to question.
+   */
+  const covered = useMemo(() => (weeks ?? []).filter((w) => w.fully_covered), [weeks])
+
   const owedSeries: TrendPoint[] = useMemo(
-    () => (weeks ?? []).map((w) => ({ date: w.week_start, value: num(w.total_owed) })),
-    [weeks],
+    () => covered.map((w) => ({ date: w.week_start, value: num(w.total_owed) })),
+    [covered],
   )
 
   const savingsSeries: TrendPoint[] = useMemo(
-    () => (weeks ?? []).map((w) => ({ date: w.week_start, value: num(w.savings) })),
+    () => (weeks ?? []).filter((w) => w.savings !== null).map((w) => ({ date: w.week_start, value: num(w.savings) })),
     [weeks],
   )
 
   const byAccount = useMemo(() => {
     const map = new Map<string, TrendPoint[]>()
     for (const r of perAccount) {
+      // An uncovered week has no balance, not a zero one.
+      if (!r.covered || r.balance === null) continue
       const list = map.get(r.account_id) ?? []
       list.push({ date: r.week_start, value: num(r.balance) })
       map.set(r.account_id, list)
@@ -106,8 +123,21 @@ export default function History() {
   return (
     <div className="page">
       <div style={{ fontWeight: 700, fontSize: 20, marginBottom: 4 }}>History</div>
-      <div className="tiny muted" style={{ marginBottom: 18 }}>
+      <div className="tiny muted" style={{ marginBottom: 12 }}>
         One reading per week, taken from the last balance recorded in that week.
+      </div>
+
+      {/* Say plainly where the line comes from. Most of it is not yet observation:
+          the banks hand over a fixed window of transactions at connection and
+          nothing before it, so the earlier weeks are worked backwards from what
+          was spent and paid. Readings taken since connecting are real. */}
+      <div className="card-panel tiny muted" style={{ marginBottom: 18, lineHeight: 1.6 }}>
+        Weeks before the accounts were connected are worked backwards from the
+        transaction record, not read from the bank. They are close, not exact —
+        an account with no transactions of its own and no payments visible from a
+        connected account is held flat, because nothing witnesses what it did.
+        Readings taken since connecting are real, and every new week added from
+        here is a measurement.
       </div>
 
       {error && (
