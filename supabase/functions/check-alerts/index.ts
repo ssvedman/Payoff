@@ -270,7 +270,11 @@ Deno.serve(async (req: Request) => {
   }
 
   // ---------- business_low: business checking below $500 ----------
-  const business = (accounts ?? []).find((a) => a.is_business)
+  // A business CHECKING account, as specified. The unfiltered find() picked
+  // whichever flagged row came first, which is a business credit card sitting at
+  // zero — so the alert read "Business account low: $0" about a card that is
+  // paid off, which is the opposite of the thing worth knowing.
+  const business = (accounts ?? []).find((a) => a.is_business && a.kind === 'checking')
   if (business) {
     const b = balanceBy.get(business.id as string)
     const bal = b ? Number(b.balance) : null
