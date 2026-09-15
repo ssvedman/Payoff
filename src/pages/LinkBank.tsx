@@ -204,7 +204,7 @@ export default function LinkBank() {
     // silently left untracked, which looks identical to having linked it.
     const picked = found
       .map((a) => choices[a.account_id])
-      .filter((c) => c && c !== '__checking__')
+      .filter((c) => c && c !== '__checking__' && c !== '__checking_business__')
     const dupes = picked.filter((c, i) => picked.indexOf(c) !== i)
     if (dupes.length > 0) {
       const name = accounts.find((a) => a.id === dupes[0])?.name ?? 'the same account'
@@ -221,12 +221,16 @@ export default function LinkBank() {
       for (const a of found) {
         const choice = choices[a.account_id]
         if (!choice) continue
-        if (choice === '__checking__') {
+        if (choice === '__checking__' || choice === '__checking_business__') {
           // Attribute it to whoever is doing the linking, rather than assuming.
           // The Edge Function falls back to 'joint' if this is not a known owner.
+          // is_business was previously unreachable from the app: only the CLI
+          // could set it, which left the business-low alert unwireable through
+          // the one flow anybody actually uses.
           await createCheckingAccount(a.official_name || a.name, a.account_id, {
             owner: memberName ? memberName.trim().toLowerCase() : undefined,
             institution: institution.trim(),
+            isBusiness: choice === '__checking_business__',
           })
           done.push(`${a.name} added as a spending account`)
         } else {
@@ -451,6 +455,7 @@ export default function LinkBank() {
                 >
                   <option value="">Don't track this account</option>
                   <option value="__checking__">Add as a spending account</option>
+                  <option value="__checking_business__">Add as a BUSINESS spending account</option>
                   {/* Every unmapped row, whatever its kind — a savings account
                       should be selectable too, not just debts. */}
                   {accounts
