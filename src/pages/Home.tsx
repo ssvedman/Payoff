@@ -151,7 +151,18 @@ export default function Home() {
       }
     }
 
+    // CARDS only, and the same reasoning as the alert that reports this by push:
+    // a rising balance is worth flagging because it means something was SPENT on
+    // an account that should be dormant. A loan or a tax debt cannot be spent on.
+    // Its balance moves because interest accrued, or because the debt came into
+    // existence at all — and a consolidation loan appearing on the day it was
+    // drawn was being reported here as a fifty-thousand-dollar deviation.
+    //
+    // This duplicates the test in check-alerts deliberately: one reports to the
+    // screen, the other to a phone. They were fixed separately because they had
+    // drifted apart, which is exactly the hazard of keeping two copies.
     for (const d of debts) {
+      if (d.kind !== 'card') continue
       if (target && d.id === target.id) continue
       if (d.previousBalance === null) continue
       if (d.balance > d.previousBalance) {

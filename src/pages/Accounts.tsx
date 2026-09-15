@@ -241,23 +241,34 @@ export default function Accounts() {
       */}
       <div className="card-panel" style={{ marginBottom: 20 }}>
         <div className="sm" style={{ fontWeight: 700, marginBottom: 3 }}>
+          Add an account
+        </div>
+        <div className="tiny muted" style={{ marginBottom: 11, lineHeight: 1.55 }}>
           {unlinkedCount > 0 ? (
             <>
               <span className="tnum">{unlinkedCount}</span>{' '}
-              {unlinkedCount === 1 ? 'account is' : 'accounts are'} not connected to a bank
+              {unlinkedCount === 1 ? 'account is' : 'accounts are'} showing a figure
+              entered by hand rather than a live one.
             </>
           ) : (
-            'Add an account'
+            'Two ways in, depending on whether a bank connection can reach it.'
           )}
         </div>
-        <div className="tiny muted" style={{ marginBottom: 10, lineHeight: 1.5 }}>
-          {unlinkedCount > 0
-            ? 'Their balances are the figures entered when the plan started, not live ones.'
-            : 'Connect a bank so its balances update on their own, or check whether one can be reached before using up a connection.'}
-        </div>
+
+        {/*
+          Two DISTINCT routes, each labelled with the case it is for.
+          A prominent "Connect a bank" above a faint "add by hand" read as one
+          real action and one afterthought, so the second was reported missing
+          even while it was on screen. Store cards are the whole reason the second
+          route exists — no aggregator reaches them — so it says so.
+        */}
         <button className="btn" onClick={() => navigate('/link')}>
           Connect a bank
         </button>
+        <div className="tiny muted" style={{ margin: '5px 0 13px', lineHeight: 1.5 }}>
+          For a bank or card that can be signed into. Balances then update on
+          their own.
+        </div>
 
         <AddDebt owners={owners} onAdded={() => void refresh()} />
       </div>
@@ -511,9 +522,15 @@ function AddDebt({ owners, onAdded }: { owners: string[]; onAdded: () => void })
 
   if (!open) {
     return (
-      <button className="btn ghost" style={{ marginTop: 10 }} onClick={() => setOpen(true)}>
-        Add an account by hand
-      </button>
+      <>
+        <button className="btn" onClick={() => setOpen(true)}>
+          Add a store card or loan by hand
+        </button>
+        <div className="tiny muted" style={{ marginTop: 5, lineHeight: 1.5 }}>
+          For anything no bank connection reaches — a store card, a private loan.
+          Its balance is kept current by typing it in.
+        </div>
+      </>
     )
   }
 

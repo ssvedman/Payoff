@@ -12,6 +12,7 @@ import {
   mapAccount,
   createCheckingAccount,
   pollLink,
+  syncNow,
   type LinkStatus,
   type PlaidAccountSummary,
 } from '../lib/plaidLink'
@@ -315,6 +316,13 @@ export default function LinkBank() {
         }
       }
       setSavedSummary(done)
+
+      // Pull from the connection straight away. Nothing flows from a newly
+      // mapped account until a sync runs, so until the nightly job came round it
+      // held no cursor, showed no balances, and the connection still described
+      // itself as needing to be set up — after it had just been set up.
+      await syncNow()
+
       await refresh()
       await loadStatus()
       setPhase('done')
