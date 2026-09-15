@@ -102,6 +102,17 @@ export const exchangeLink = (publicToken: string, institution: string) =>
     institution,
   })
 
+export interface InstitutionHit {
+  institution_id: string
+  name: string
+  products: string[]
+  oauth: boolean
+}
+
+/** Costs nothing and consumes no item. Check before committing one. */
+export const searchInstitutions = (query: string) =>
+  call<{ query: string; institutions: InstitutionHit[] }>('institutions', { query })
+
 export const itemAccounts = (itemId: string) =>
   call<{ item_id: string; accounts: PlaidAccountSummary[] }>('accounts', { item_id: itemId })
 

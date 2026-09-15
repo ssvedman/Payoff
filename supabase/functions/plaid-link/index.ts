@@ -271,6 +271,45 @@ Deno.serve(async (req: Request) => {
         })
       }
 
+      /**
+       * Search Plaid's institution directory BEFORE spending an item.
+       *
+       * The Trial plan allows ten items and removing one does not give it back,
+       * so the expensive mistake is starting a link against a bank Plaid cannot
+       * reach — the item is consumed the moment the bank login succeeds, before
+       * anyone finds out no compatible account will be offered.
+       *
+       * This call consumes nothing. It also answers the question that actually
+       * bites: store cards are listed under the RETAIL BRAND, not the bank that
+       * issues them, so searching the issuer's name returns nothing and the card
+       * looks unreachable when it is not.
+       */
+      case 'institutions': {
+        const query = ((body.query as string) ?? '').trim()
+        if (query.length < 2) return json({ error: 'query must be at least 2 characters' }, 400)
+
+        const res = await plaid('/institutions/search', {
+          query,
+          products: ['transactions'],
+          country_codes: ['US'],
+          options: { include_optional_metadata: true },
+        })
+
+        return json({
+          query,
+          institutions: (res.institutions ?? []).slice(0, 10).map(
+            (i: Record<string, unknown>) => ({
+              institution_id: i.institution_id,
+              name: i.name,
+              products: i.products,
+              // OAuth banks hand the login to the bank's own page. Worth knowing
+              // before starting, because the flow looks different.
+              oauth: i.oauth ?? false,
+            }),
+          ),
+        })
+      }
+
       /** Map a Plaid account_id onto one of our seeded account rows. */
       case 'map': {
         const accountId = body.account_id as string
