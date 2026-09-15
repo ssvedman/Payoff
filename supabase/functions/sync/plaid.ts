@@ -32,16 +32,44 @@ export class PlaidError extends Error {
   }
 }
 
+/**
+ * One institution must not be able to hang the whole night.
+ *
+ * fetch has no default timeout, the nightly run walks every item in sequence, and
+ * an Edge Function is killed by the platform when it runs too long — so a single
+ * unresponsive bank took every item after it down with it, silently, with no
+ * report written. 30s is generous for Plaid and far below the function ceiling.
+ */
+const REQUEST_TIMEOUT_MS = 30_000
+
 async function call<T>(path: string, body: Record<string, unknown>): Promise<T> {
-  const res = await fetch(`${PLAID_HOST}${path}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'PLAID-CLIENT-ID': CLIENT_ID,
-      'PLAID-SECRET': SECRET,
-    },
-    body: JSON.stringify(body),
-  })
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), REQUEST_TIMEOUT_MS)
+
+  let res: Response
+  try {
+    res = await fetch(`${PLAID_HOST}${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'PLAID-CLIENT-ID': CLIENT_ID,
+        'PLAID-SECRET': SECRET,
+      },
+      body: JSON.stringify(body),
+      signal: ctl.signal,
+    })
+  } catch (err) {
+    if ((err as Error).name === 'AbortError') {
+      throw new PlaidError(
+        'REQUEST_TIMEOUT',
+        'API_ERROR',
+        `Plaid ${path} did not respond within ${REQUEST_TIMEOUT_MS / 1000}s`,
+      )
+    }
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
 
   const json = await res.json().catch(() => ({}))
 
@@ -145,6 +173,13 @@ export async function transactionsSyncAll(
   accessToken: string,
   startCursor: string | null,
   maxRestarts = 3,
+  /**
+   * A hard stop on pagination. `has_more` is the institution's word for it, and a
+   * bad cursor that never reports done would otherwise spin until the platform
+   * kills the function — losing the whole night's run with nothing written. 500
+   * pages at 500 rows is far more history than this household can have.
+   */
+  maxPages = 500,
 ): Promise<{ added: PlaidTransaction[]; modified: PlaidTransaction[]; removed: string[]; cursor: string }> {
   for (let attempt = 0; attempt <= maxRestarts; attempt++) {
     const added: PlaidTransaction[] = []
@@ -154,6 +189,7 @@ export async function transactionsSyncAll(
     let restart = false
 
     try {
+      let pages = 0
       for (;;) {
         const page = await transactionsSyncPage(accessToken, cursor)
         added.push(...page.added)
@@ -161,6 +197,13 @@ export async function transactionsSyncAll(
         removed.push(...page.removed.map((r) => r.transaction_id))
         cursor = page.next_cursor
         if (!page.has_more) break
+        if (++pages >= maxPages) {
+          throw new PlaidError(
+            'TRANSACTIONS_SYNC_PAGE_LIMIT',
+            'TRANSACTIONS_ERROR',
+            `Stopped after ${maxPages} pages with has_more still set`,
+          )
+        }
       }
     } catch (err) {
       if (err instanceof PlaidError && err.code === 'TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION') {

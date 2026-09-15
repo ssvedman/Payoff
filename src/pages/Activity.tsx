@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState, useCallback } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/auth'
 import { useData, type Transaction } from '../lib/data'
@@ -98,18 +98,42 @@ export default function Activity() {
     return { from, to }
   }, [anchor])
 
+  const [monthError, setMonthError] = useState<string | null>(null)
+  /** Guards against a slower earlier month landing after a newer one. */
+  const monthSeq = useRef(0)
+
   const loadMonth = useCallback(async () => {
     if (thisMonth) {
       setPastTxns(null)
+      setMonthError(null)
       return
     }
+    const seq = ++monthSeq.current
     setLoadingMonth(true)
-    const { data } = await supabase
+    setMonthError(null)
+
+    const { data, error: qErr } = await supabase
       .from('transactions')
       .select('*')
       .gte('posted_on', monthBounds.from)
       .lte('posted_on', monthBounds.to)
       .order('posted_on', { ascending: false })
+
+    // Tapping back through months faster than they load meant an older request
+    // could resolve last and paint the wrong month's rows under the right
+    // month's heading.
+    if (seq !== monthSeq.current) return
+
+    // A failed query used to render as "No transactions in August" — an empty
+    // month and a broken one are not the same statement, and only one of them
+    // is true.
+    if (qErr) {
+      setMonthError(qErr.message)
+      setPastTxns([])
+      setLoadingMonth(false)
+      return
+    }
+
     setPastTxns(
       (data ?? []).map((t) => ({ ...(t as unknown as Transaction), amount: Number(t.amount) })),
     )
@@ -350,7 +374,9 @@ export default function Activity() {
         error ? null : (
           <div className="sm muted" style={{ textAlign: 'center', padding: '34px 0' }}>
             {filter === 'all'
-              ? `No transactions in ${MONTH_NAMES[anchor.getMonth()]}.`
+              ? monthError
+                ? `${MONTH_NAMES[anchor.getMonth()]} could not be loaded — ${monthError}`
+                : `No transactions in ${MONTH_NAMES[anchor.getMonth()]}.`
               : 'Nothing in this filter.'}
           </div>
         )

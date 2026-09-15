@@ -90,17 +90,25 @@ export default function LinkBank() {
     [found, seeded],
   )
 
-  // Pre-select every confident suggestion so confirming is one tap.
+  /**
+   * Pre-select every confident suggestion so confirming is one tap — but seed
+   * each row ONCE. `accounts` gets a new identity on every background refetch,
+   * which rebuilt `suggestions` and threw away choices already made, mid-review,
+   * with no visible cause. Only fill in rows that have no value yet.
+   */
   useEffect(() => {
     if (!found.length) return
-    const next: Record<string, string> = {}
-    for (const a of found) {
-      const s = suggestions.get(a.account_id)
-      if (s?.kind === 'map') next[a.account_id] = s.seededId
-      else if (s?.kind === 'create_checking') next[a.account_id] = '__checking__'
-      else next[a.account_id] = ''
-    }
-    setChoices(next)
+    setChoices((prev) => {
+      const next = { ...prev }
+      for (const a of found) {
+        if (next[a.account_id] !== undefined) continue
+        const s = suggestions.get(a.account_id)
+        if (s?.kind === 'map') next[a.account_id] = s.seededId
+        else if (s?.kind === 'create_checking') next[a.account_id] = '__checking__'
+        else next[a.account_id] = ''
+      }
+      return next
+    })
   }, [found, suggestions])
 
   const remaining = status ? status.itemCap - status.itemsUsed : null
@@ -190,6 +198,22 @@ export default function LinkBank() {
   }
 
   async function saveMappings() {
+    // Each seeded row can hold exactly one Plaid account — plaid_account_id is a
+    // single column. Two rows pointing at the same one is not a conflict the
+    // database reports; the second write simply wins and the first account is
+    // silently left untracked, which looks identical to having linked it.
+    const picked = found
+      .map((a) => choices[a.account_id])
+      .filter((c) => c && c !== '__checking__')
+    const dupes = picked.filter((c, i) => picked.indexOf(c) !== i)
+    if (dupes.length > 0) {
+      const name = accounts.find((a) => a.id === dupes[0])?.name ?? 'the same account'
+      setError(
+        `Two of these are matched to ${name}. Each one needs its own row, or only the last would be kept.`,
+      )
+      return
+    }
+
     setPhase('saving')
     setError(null)
     const done: string[] = []
@@ -259,6 +283,36 @@ export default function LinkBank() {
           {status.items.length > 0 && (
             <div className="tiny muted" style={{ marginTop: 8 }}>
               Connected: {status.items.map((i) => i.institution).join(', ')}
+            </div>
+          )}
+
+          {/* A connection can go stale — a password change, an expired consent —
+              and from then on it silently stops updating. sync records that as
+              status 'login_required', but nothing in the app has ever shown it,
+              so the only symptom was a balance that quietly stopped moving while
+              the screen still said "Connected". Reconnecting costs no allowance:
+              it reuses the existing item rather than consuming a new one. */}
+          {status.items.some((i) => i.status !== 'ok') && (
+            <div className="banner banner--red tiny" style={{ marginTop: 10, lineHeight: 1.5 }}>
+              <div style={{ fontWeight: 700, marginBottom: 3 }}>
+                {status.items.filter((i) => i.status !== 'ok').length === 1
+                  ? 'One connection has stopped updating'
+                  : 'Some connections have stopped updating'}
+              </div>
+              {status.items
+                .filter((i) => i.status !== 'ok')
+                .map((i) => (
+                  <div key={i.item_id}>
+                    {i.institution} —{' '}
+                    {i.status === 'login_required'
+                      ? 'needs signing in again'
+                      : 'last sync failed'}
+                    . Its balances are frozen at the last reading.
+                  </div>
+                ))}
+              <div style={{ marginTop: 6 }}>
+                Reconnecting one of these does not use up another connection.
+              </div>
             </div>
           )}
         </div>

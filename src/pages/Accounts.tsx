@@ -89,15 +89,34 @@ export default function Accounts() {
     [accounts],
   )
 
-  // Re-seed only when the underlying rows change identity — on first load and
-  // after refresh(). Typing never changes `accounts`, so nothing in progress is
-  // clobbered mid-edit.
+  /**
+   * Re-seed on the VALUES, not the array identity.
+   *
+   * `manual` is a fresh array on every load, and the data layer reloads on a tab
+   * focus or a token refresh — so keying on identity wiped whatever was half
+   * typed the moment the app regained focus, which on a phone is every time the
+   * banking app is checked for the figure being copied across. Keyed on the
+   * balances themselves, the effect only fires when a balance actually changed.
+   */
+  const seedSig = useMemo(() => manual.map((a) => `${a.id}:${seedValue(a)}`).join('|'), [manual])
+
   useEffect(() => {
     const next: Record<string, string> = {}
     for (const a of manual) next[a.id] = seedValue(a)
     setSeed(next)
-    setValues(next)
-  }, [manual])
+    // Keep anything already edited away from its seed; adopt the new figure only
+    // where the field is untouched.
+    setValues((prev) => {
+      const merged = { ...next }
+      for (const a of manual) {
+        const was = prev[a.id]
+        if (was !== undefined && was !== seed[a.id]) merged[a.id] = was
+      }
+      return merged
+    })
+    // seed is intentionally not a dependency: it is written by this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedSig])
 
   const changed = manual.filter((a) => (values[a.id] ?? '') !== (seed[a.id] ?? ''))
   const canSave = changed.length > 0 && !saving && Boolean(user)

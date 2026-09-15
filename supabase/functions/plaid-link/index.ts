@@ -314,6 +314,27 @@ Deno.serve(async (req: Request) => {
           return json({ error: 'name and plaid_account_id are required' }, 400)
         }
 
+        // The upsert conflicts on plaid_account_id, which is the same column
+        // `map` writes onto a DEBT row. Choosing "add as a spending account" for
+        // an id already mapped to a card would rewrite that row in place with
+        // checking defaults — erasing its APR, its minimum payment and its place
+        // in the payoff queue, silently, with the balance left behind. Look
+        // first and refuse.
+        const { data: owns } = await admin
+          .from('accounts')
+          .select('id, name, kind')
+          .eq('plaid_account_id', plaidAccountId)
+          .maybeSingle()
+
+        if (owns && owns.kind !== 'checking') {
+          return json(
+            {
+              error: `That account is already linked to "${owns.name}". Unlink it there first — adding it as a spending account would overwrite its rate, minimum and payoff position.`,
+            },
+            409,
+          )
+        }
+
         const { data, error } = await admin
           .from('accounts')
           .upsert(

@@ -68,15 +68,21 @@ export default function Month() {
       // A transaction now carries its line explicitly. Anything not yet assigned
       // — a merchant no rule covers — collects in the catch-all rather than being
       // dropped, so the lines always sum to the bucket.
-      const lineId = t.budget_line_id ?? catchAll?.id
-      if (!lineId || !spent.has(lineId)) continue
+      // An id that is not an OPTIONAL line — a row filed against a fixed line and
+      // later re-bucketed, say — must still land somewhere, or the rows below sum
+      // to less than the bar above them and the comment's promise is broken.
+      const lineId =
+        t.budget_line_id && spent.has(t.budget_line_id) ? t.budget_line_id : catchAll?.id
+      if (!lineId) continue
       spent.set(lineId, (spent.get(lineId) ?? 0) + t.amount)
     }
 
     return lines.map((l) => ({ ...l, spent: spent.get(l.id) ?? 0 }))
   }, [budgetLines, transactions])
 
-  if (loading) {
+  // First load only — see the note on Home. A background refetch must not replace
+  // figures already on screen with placeholders.
+  if (loading && budgetLines.length === 0) {
     return (
       <div className="page" aria-busy="true" aria-label="Loading this month">
         <div

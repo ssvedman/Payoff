@@ -216,6 +216,15 @@ export type Database = {
         }
         Relationships: []
       }
+      plaid_sync_status: {
+        Row: {
+          item_id: string
+          institution: string
+          status: string
+          last_synced: string | null
+        }
+        Relationships: []
+      }
       account_progress: {
         Row: {
           account_id: string

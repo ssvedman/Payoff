@@ -21,7 +21,11 @@ while IFS= read -r pat; do
   [ -z "$pat" ] && continue
   case "$pat" in \#*) continue ;; esac
   for c in $(git rev-list --branches --tags); do
-    hits=$(git grep -l -i -F "$pat" "$c" -- 2>/dev/null | sed "s|^$c:||" | grep -v '^\.gitignore$' | grep -v '^\.githooks/')
+    # Exempt ONLY the untracked pattern file, and only in case it ever becomes
+    # tracked. The previous filters skipped all of .githooks/ and .gitignore —
+    # both of which ARE committed and public, so the exemptions could never
+    # suppress the file they were written for and only ever hid real hits.
+    hits=$(git grep -l -i -F "$pat" "$c" -- 2>/dev/null | sed "s|^$c:||" | grep -v '^\.githooks/pii-patterns$')
     if [ -n "$hits" ]; then
       echo "pre-push: BLOCKED — '$pat' found in commit $(git rev-parse --short "$c"):"
       echo "$hits" | sed 's/^/    /'

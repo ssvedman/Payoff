@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { supabase } from './supabase'
 import { useAuth } from './auth'
 import { isoDate } from './format'
@@ -99,6 +99,22 @@ export function monthEnd(d = new Date()): string {
 
 export function DataProvider({ children }: { children: ReactNode }) {
   const { isMember, user } = useAuth()
+
+  /**
+   * supabase-js hands back a NEW user object on every token refresh and on every
+   * tab focus, even when nothing about the user changed. Keying `load` on the
+   * object identity therefore rebuilt the callback, re-fired the effect, and
+   * refetched the entire dataset — which also blew away in-progress typing on
+   * Accounts and mapping choices on LinkBank. The id is what actually matters.
+   */
+  const userId = user?.id ?? null
+
+  /**
+   * Guards against an older request finishing last. Two loads can be in flight
+   * after a refresh() lands on top of a focus refetch, and the slower one would
+   * otherwise commit stale rows over fresh ones.
+   */
+  const loadSeq = useRef(0)
   const [state, setState] = useState<Omit<DataState, 'refresh'>>({
     loading: true,
     error: null,
@@ -121,6 +137,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
       setState((s) => ({ ...s, loading: false }))
       return
     }
+
+    const seq = ++loadSeq.current
+    /** Only the most recent load may write. */
+    const isCurrent = () => seq === loadSeq.current
 
     setState((s) => ({ ...s, loading: true, error: null }))
 
@@ -151,7 +171,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
         ? supabase.from('notification_prefs').select('*').eq('user_id', user.id)
         : Promise.resolve({ data: [], error: null }),
       supabase.from('household_members').select('user_id, display_name'),
-      supabase.from('plaid_items').select('last_synced'),
+      // plaid_sync_status, not plaid_items: the base table has RLS on with no
+      // policy by design (tokens and cursors are service-role only), so reading
+      // it from the browser always returned nothing and the header always said
+      // "not synced yet".
+      supabase.from('plaid_sync_status').select('last_synced, status, institution'),
       supabase.from('account_progress').select('*'),
     ])
 
@@ -159,9 +183,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
       accountsRes.error ?? balancesRes.error ?? txnRes.error ?? budgetRes.error ?? planRes.error
 
     if (firstError) {
+      if (!isCurrent()) return
       setState((s) => ({ ...s, loading: false, error: firstError.message }))
       return
     }
+    if (!isCurrent()) return
 
     const balanceByAccount = new Map(
       (balancesRes.data ?? []).map((b: Record<string, unknown>) => [b.account_id as string, b]),
@@ -242,7 +268,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       ),
       lastSyncedAt: lastSyncedAt ?? null,
     })
-  }, [isMember, user])
+  }, [isMember, userId])
 
   useEffect(() => {
     void load()
