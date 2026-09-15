@@ -121,12 +121,36 @@ Deno.serve(async (req: Request) => {
     errors: [] as string[],
   }
 
-  const [itemsRes, accountsRes, rulesRes, lineRulesRes] = await Promise.all([
-    admin.from('plaid_items').select('*'),
-    admin.from('accounts').select('*'),
-    admin.from('merchant_rules').select('match_text, bucket, budget_line_id'),
-    admin.from('budget_line_rules').select('plaid_prefix, budget_line_id'),
-  ])
+  /**
+   * Read the whole picture, retrying a transient failure before giving up.
+   *
+   * The platform intermittently rejects a perfectly good service key with
+   * "JWT issued at future" — a clock skew of a second or two between whatever
+   * mints the token and whatever validates it. The abort below is right to
+   * refuse to continue on a failed read, but refusing on the FIRST failure made
+   * every run a coin flip: two of the last five manual syncs died this way with
+   * nothing wrong at either end.
+   *
+   * A short backoff clears it. Anything still failing after three attempts is
+   * not a blip, and the abort stands.
+   */
+  const readAll = () =>
+    Promise.all([
+      admin.from('plaid_items').select('*'),
+      admin.from('accounts').select('*'),
+      admin.from('merchant_rules').select('match_text, bucket, budget_line_id'),
+      admin.from('budget_line_rules').select('plaid_prefix, budget_line_id'),
+    ])
+
+  let [itemsRes, accountsRes, rulesRes, lineRulesRes] = await readAll()
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const firstErr = itemsRes.error ?? accountsRes.error ?? rulesRes.error ?? lineRulesRes.error
+    if (!firstErr) break
+    report.errors.push(`read attempt ${attempt} failed, retrying: ${firstErr.message}`)
+    await new Promise((r) => setTimeout(r, 1200 * attempt))
+    ;[itemsRes, accountsRes, rulesRes, lineRulesRes] = await readAll()
+  }
 
   // postgrest-js resolves with {data: null, error} rather than rejecting, so a
   // failed read here used to sail straight through: `accounts` came back empty,

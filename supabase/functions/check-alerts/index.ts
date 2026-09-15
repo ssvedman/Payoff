@@ -150,13 +150,27 @@ Deno.serve(async (req: Request) => {
   const now = easternNow()
   const alerts: Alert[] = []
 
-  const [accountsRes, balancesRes, planRes, txnsRes, linesRes] = await Promise.all([
-    admin.from('accounts').select('*').order('payoff_order'),
-    admin.from('account_balance_current').select('*'),
-    admin.from('plan_settings').select('*').eq('id', 1).maybeSingle(),
-    admin.from('transactions').select('*').gte('posted_on', now.monthStart).lte('posted_on', now.iso),
-    admin.from('budget_lines').select('*'),
-  ])
+  // Same transient rejection as sync guards against: a clock skew of a second or
+  // two makes a valid service key look as though it were issued in the future.
+  // Retry briefly before deciding the reads have genuinely failed.
+  const readAll = () =>
+    Promise.all([
+      admin.from('accounts').select('*').order('payoff_order'),
+      admin.from('account_balance_current').select('*'),
+      admin.from('plan_settings').select('*').eq('id', 1).maybeSingle(),
+      admin.from('transactions').select('*').gte('posted_on', now.monthStart).lte('posted_on', now.iso),
+      admin.from('budget_lines').select('*'),
+    ])
+
+  let [accountsRes, balancesRes, planRes, txnsRes, linesRes] = await readAll()
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const firstErr =
+      accountsRes.error ?? balancesRes.error ?? planRes.error ?? txnsRes.error ?? linesRes.error
+    if (!firstErr) break
+    await new Promise((r) => setTimeout(r, 1200 * attempt))
+    ;[accountsRes, balancesRes, planRes, txnsRes, linesRes] = await readAll()
+  }
 
   // postgrest-js resolves with {data: null, error} instead of rejecting. Every
   // alert here is an ABSENCE test — "no attack payment seen", "balance not
