@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import Bar from '../components/Bar'
 import { useData, usePayoffPlan, useMonthTotals } from '../lib/data'
 import { useNavigate } from 'react-router-dom'
@@ -74,6 +74,13 @@ function HomeSkeleton() {
 
 export default function Home() {
   const navigate = useNavigate()
+  /**
+   * Cleared debts are collapsed by default. Nine struck-through rows pushed the
+   * live queue below the fold, and the accounts that still need paying are the
+   * reason the screen exists. They stay reachable — a cleared debt is the record
+   * of the work done, not something to hide.
+   */
+  const [showCleared, setShowCleared] = useState(false)
   const { loading, error, debts, lastSyncedAt, progress } = useData()
   const plan = usePayoffPlan()
   const totals = useMonthTotals()
@@ -180,6 +187,10 @@ export default function Home() {
   )
   const savingsPct = pacedTarget > 0 ? clamp01(plan.savingsBalance / pacedTarget) : 0
   const savingsAhead = plan.savingsBalance - pacedTarget
+
+  const clearedDebts = debts.filter((d) => d.balance <= 0 || d.cleared_at !== null)
+  const activeDebts = debts.filter((d) => !(d.balance <= 0 || d.cleared_at !== null))
+  const shownDebts = showCleared ? debts : activeDebts
 
   return (
     <div className="page">
@@ -294,13 +305,15 @@ export default function Home() {
 
       <div className="sect">Queue</div>
       <div style={{ borderTop: '2px solid var(--ink)' }}>
-        {debts.length === 0 && (
+        {shownDebts.length === 0 && (
           <div className="row">
-            <div className="sm muted">No accounts on record.</div>
+            <div className="sm muted">
+              {debts.length === 0 ? 'No accounts on record.' : 'Every account is clear.'}
+            </div>
           </div>
         )}
-        {debts.map((d, i) => {
-          const last = i === debts.length - 1
+        {shownDebts.map((d, i) => {
+          const last = i === shownDebts.length - 1
           const isCleared = d.balance <= 0 || d.cleared_at !== null
           const isTarget = !isCleared && target !== null && d.id === target.id
           const rowStyle = {
@@ -392,6 +405,20 @@ export default function Home() {
           )
         })}
       </div>
+
+      {clearedDebts.length > 0 && (
+        <button
+          type="button"
+          className="btn ghost"
+          style={{ marginTop: 12, fontSize: 13 }}
+          aria-expanded={showCleared}
+          onClick={() => setShowCleared((v) => !v)}
+        >
+          {showCleared
+            ? 'Hide cleared'
+            : `Show ${clearedDebts.length} cleared ${clearedDebts.length === 1 ? 'account' : 'accounts'}`}
+        </button>
+      )}
 
       <div className="card-panel" style={{ marginTop: 20 }}>
         <div
