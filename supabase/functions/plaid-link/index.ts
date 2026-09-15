@@ -23,10 +23,28 @@ const admin = createClient(SUPABASE_URL, SERVICE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 })
 
+/**
+ * CORS must be on EVERY response, not just the preflight.
+ *
+ * The browser sends the preflight, gets an allow, then blocks the actual response
+ * because it carries no Access-Control-Allow-Origin — surfacing as a bare
+ * "Failed to fetch" with no status and no body to diagnose from.
+ *
+ * apikey belongs in the allowed headers too: supabase-js style clients send it
+ * alongside Authorization, and a header missing from the allow-list fails the
+ * preflight on its own.
+ */
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers':
+    'authorization, content-type, apikey, x-client-info, x-supabase-api-version',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+}
+
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body, null, 2), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...CORS },
   })
 
 async function plaid(path: string, body: Record<string, unknown>) {
@@ -103,13 +121,7 @@ async function requireMember(req: Request): Promise<boolean> {
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'authorization, content-type',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      },
-    })
+    return new Response(null, { headers: CORS })
   }
 
   if (!(await requireMember(req))) return json({ error: 'unauthorized' }, 401)

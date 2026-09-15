@@ -49,18 +49,35 @@ async function call<T>(action: string, body: Record<string, unknown> = {}): Prom
   const token = data.session?.access_token
   if (!token) throw new Error('Not signed in.')
 
-  const res = await fetch(FUNCTION_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ action, ...body }),
-  })
+  let res: Response
+  try {
+    res = await fetch(FUNCTION_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ action, ...body }),
+    })
+  } catch (e) {
+    // fetch rejects with a bare "Failed to fetch" for anything below HTTP: a
+    // blocked CORS response, DNS, or no connection. There is no status or body to
+    // read, so say which of those it could be rather than repeat the browser's
+    // own unhelpful wording.
+    console.error('plaid-link request failed before any response', e)
+    throw new Error(
+      'Could not reach the server. Check your connection and try again — if it keeps failing, the bank-linking service needs attention.',
+    )
+  }
 
   const json = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(json.error ?? `Request failed (${res.status})`)
+  if (!res.ok) {
+    if (res.status === 401) {
+      throw new Error('Your session is not allowed to link banks. Try signing out and back in.')
+    }
+    throw new Error(json.error ?? `Request failed (${res.status})`)
+  }
   return json as T
 }
 
