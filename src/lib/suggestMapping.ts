@@ -16,6 +16,8 @@ export interface SeededAccount {
   plaid_account_id: string | null
   is_manual: boolean
   opening_balance?: number
+  /** Latest known balance, used to spot an account already connected elsewhere. */
+  balance?: number
 }
 
 export type Suggestion =
@@ -74,6 +76,31 @@ export function suggestFor(
   taken: Set<string>,
 ): Suggestion {
   const kinds = compatibleKinds(plaidAccount)
+
+  /**
+   * A joint account appears in BOTH holders' logins, and Plaid issues a different
+   * account id per login — so nothing stops the same real account being added
+   * twice, once from each side. That happened once here: the same savings account
+   * came in as a second row and double-counted all 82 of its transactions.
+   *
+   * There are no transactions to compare at this point, but an exact balance match
+   * against an account already connected is a strong enough signal to stop and ask.
+   */
+  if (plaidAccount.current !== null && plaidAccount.current !== undefined) {
+    const already = seeded.find(
+      (x) =>
+        x.plaid_account_id &&
+        x.plaid_account_id !== plaidAccount.account_id &&
+        typeof x.balance === 'number' &&
+        Math.abs(x.balance - Math.abs(plaidAccount.current as number)) < 0.005,
+    )
+    if (already) {
+      return {
+        kind: 'skip',
+        reason: `Same balance as "${already.name}", which is already connected. If this is that account seen from the other person's login, leave it untracked — adding it twice double-counts everything on it.`,
+      }
+    }
+  }
 
   if (kinds.length === 0) {
     return { kind: 'skip', reason: `Unrecognized account type "${plaidAccount.type}".` }

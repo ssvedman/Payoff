@@ -80,6 +80,7 @@ export default function LinkBank() {
         plaid_account_id: a.plaid_account_id,
         is_manual: a.is_manual,
         opening_balance: a.opening_balance,
+        balance: a.balance,
       })),
     [accounts],
   )
