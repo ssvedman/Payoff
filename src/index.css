@@ -1,0 +1,303 @@
+/* Payoff — design tokens from BUILD.md §8, layout from mockups.html */
+
+:root {
+  --bg: #E4E7EB;
+  --card: #F2F4F6;
+  --white: #FFFFFF;
+
+  --ink: #161E27;
+  --steel: #66748A;
+  --line: #C9CFD7;
+
+  --amber: #E39A00;
+  --amber-bg: #FCF3DF;
+  --amber-tx: #633806;
+
+  --green: #2F7A5E;
+  --green-bg: #E4F0EB;
+  --green-tx: #1C4A39;
+
+  --red: #B3453A;
+  --red-bg: #F6E3E1;
+  --red-tx: #7A2A22;
+
+  /* Neutral pill, used for the "Fixed" bucket in mockups.html */
+  --neutral-bg: #E7EBF0;
+  --neutral-tx: #2E3A49;
+
+  --r-control: 5px;
+  --r-card: 7px;
+
+  --nav-h: 58px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+html { background: var(--bg); }
+
+body {
+  background: var(--bg);
+  font-family: 'Archivo', system-ui, -apple-system, sans-serif;
+  color: var(--ink);
+  line-height: 1.5;
+  font-size: 15px;
+  overscroll-behavior-y: none;
+}
+
+/* Tabular numerals on every figure — BUILD.md §8 */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* ---------- Layout: mobile first at 376px, centered 760px column on desktop ---------- */
+
+.app {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+.page {
+  flex: 1;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 6px 20px calc(var(--nav-h) + 28px);
+}
+
+.page--centered {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-bottom: 120px;
+  max-width: 420px;
+}
+
+/* ---------- Bottom navigation ---------- */
+
+.nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  border-top: 1px solid var(--line);
+  background: var(--white);
+  padding-bottom: env(safe-area-inset-bottom);
+  z-index: 20;
+}
+
+.nav__inner {
+  display: flex;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.nav a {
+  flex: 1;
+  text-align: center;
+  padding: 11px 0 13px;
+  font-size: 10.5px;
+  color: var(--steel);
+  font-weight: 600;
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.nav a.on { color: var(--ink); }
+
+.nav i {
+  display: block;
+  font-size: 17px;
+  margin-bottom: 3px;
+  font-style: normal;
+}
+
+/* ---------- Primitives ---------- */
+
+.bar {
+  height: 7px;
+  background: var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.bar > span {
+  display: block;
+  height: 100%;
+  transition: width .3s ease;
+}
+
+.btn {
+  padding: 13px 16px;
+  background: var(--ink);
+  color: #fff;
+  border: none;
+  border-radius: var(--r-control);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  width: 100%;
+  cursor: pointer;
+}
+
+.btn:disabled { opacity: .5; cursor: default; }
+
+.btn.ghost {
+  background: transparent;
+  color: var(--steel);
+  border: 1px solid var(--line);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.row:last-child { border-bottom: none; }
+
+.dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: #fff;
+  font-weight: 700;
+}
+
+.muted { color: var(--steel); }
+.tiny  { font-size: 11.5px; }
+.sm    { font-size: 13px; }
+
+.pill {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 11px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  border: none;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.sect {
+  font-size: 13px;
+  font-weight: 700;
+  margin: 22px 0 10px;
+}
+
+.caps {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  color: var(--steel);
+}
+
+input {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  font-family: inherit;
+  font-size: 15px;
+  background: #fff;
+  color: var(--ink);
+}
+
+input:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+table { width: 100%; border-collapse: collapse; }
+
+td {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+tr:last-child td { border-bottom: none; }
+
+.toggle {
+  width: 40px;
+  height: 23px;
+  border-radius: 12px;
+  background: var(--green);
+  position: relative;
+  flex: 0 0 auto;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: background .18s ease;
+}
+
+.toggle.off { background: var(--line); }
+
+.toggle:after {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  top: 2.5px;
+  right: 2.5px;
+  transition: all .18s ease;
+}
+
+.toggle.off:after { right: auto; left: 2.5px; }
+
+.card-panel {
+  background: var(--card);
+  border-radius: var(--r-card);
+  padding: 15px;
+}
+
+.banner {
+  border-radius: var(--r-card);
+  padding: 13px;
+}
+.banner--red   { background: var(--red-bg);   color: var(--red-tx); }
+.banner--amber { background: var(--amber-bg); color: var(--amber-tx); }
+.banner--green { background: var(--green-bg); color: var(--green-tx); }
+
+.target-card {
+  background: var(--ink);
+  color: #fff;
+  border-radius: var(--r-card);
+  padding: 16px;
+}
+
+.skeleton {
+  background: var(--line);
+  border-radius: var(--r-control);
+  opacity: .5;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse { 0%,100% { opacity: .35 } 50% { opacity: .6 } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}

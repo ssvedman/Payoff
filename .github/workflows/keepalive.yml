@@ -1,0 +1,69 @@
+name: Keep Supabase awake
+
+# A nightly pg_cron job does NOT prevent the free tier pausing after a week idle —
+# Supabase counts API calls to the project, and once paused the cron stops for good
+# and cannot restart itself. This weekly ping is what actually keeps it alive.
+#
+# It also writes a heartbeat commit, and that is not busywork: GitHub automatically
+# DISABLES scheduled workflows in a public repository after 60 days with no
+# repository activity. For a finished two-person app, going 60 days without a push
+# is the normal state, not an edge case — so without this commit the one mechanism
+# holding the whole automation chain up would quietly switch itself off, and the
+# Supabase pause would follow a week later.
+on:
+  schedule:
+    - cron: '17 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Ping the project
+        run: |
+          # /auth/v1/health is the one endpoint that answers 200 for an anonymous
+          # caller. PostgREST cannot be used as a liveness probe here: anon lost
+          # EXECUTE on is_household_member() during hardening, so every table read
+          # now returns 401 — which would make a real outage indistinguishable from
+          # the healthy case.
+          code=$(curl -s -o /tmp/health.json -w '%{http_code}' \
+            "${{ vars.VITE_SUPABASE_URL }}/auth/v1/health" \
+            -H "apikey: ${{ vars.VITE_SUPABASE_ANON_KEY }}")
+          echo "auth health: $code"
+          cat /tmp/health.json || true
+          echo
+          if [ "$code" != "200" ]; then
+            echo "::error::Expected 200 from /auth/v1/health, got $code — the project may be paused."
+            exit 1
+          fi
+
+          # A second call against PostgREST, so the REST service is exercised too.
+          # 200 (empty result) and 401 (anon denied) both mean it is answering.
+          rest=$(curl -s -o /dev/null -w '%{http_code}' \
+            "${{ vars.VITE_SUPABASE_URL }}/rest/v1/accounts?select=id&limit=1" \
+            -H "apikey: ${{ vars.VITE_SUPABASE_ANON_KEY }}")
+          echo "postgrest: $rest"
+          if [ "$rest" != "200" ] && [ "$rest" != "401" ]; then
+            echo "::error::PostgREST returned $rest."
+            exit 1
+          fi
+
+      - name: Record the heartbeat
+        run: |
+          mkdir -p .github
+          date -u +'%Y-%m-%dT%H:%M:%SZ' > .github/last-keepalive
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/last-keepalive
+          # Nothing to commit is fine; never fail the job over it.
+          git diff --staged --quiet || git commit -m "chore: keepalive heartbeat [skip ci]"
+          git push

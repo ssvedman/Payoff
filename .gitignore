@@ -1,0 +1,52 @@
+# Build documentation — contains real balances, account details and plan figures.
+# Must never reach a public repository.
+/Build Docs/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies and build output
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Editor / OS
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+logs/
+*.log
+
+# Supabase local
+supabase/.temp/
+supabase/.branches/
+
+# VAPID private key — set in the Supabase dashboard, never committed
+supabase/.vapid.local.json
+
+supabase/.vapid.local.json.secrets
+
+# TS incremental build info
+*.tsbuildinfo
+
+supabase/SECRETS.local.md
+
+# Household runbook — names, addresses and institutions
+RUNBOOK.local.md
+
+# PII pattern list for the pre-push hook — names the household
+.githooks/pii-patterns
+
+# Deployment runbook — project ref, client ids, institution list
+SETUP.local.md

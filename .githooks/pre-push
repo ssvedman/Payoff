@@ -1,0 +1,34 @@
+#!/bin/sh
+# Block a push that would publish household PII.
+#
+# This exists because a promise to "scan before pushing" was made and then not
+# kept: the scan ran after the push, when it could no longer prevent anything.
+# A hook cannot forget the order.
+#
+# Patterns live in .githooks/pii-patterns, which is gitignored along with
+# everything else that names the household.
+
+PATTERNS_FILE="$(git rev-parse --show-toplevel)/.githooks/pii-patterns"
+[ -f "$PATTERNS_FILE" ] || exit 0
+
+FAIL=0
+while IFS= read -r pat; do
+  [ -z "$pat" ] && continue
+  case "$pat" in \#*) continue ;; esac
+  for c in $(git rev-list --all); do
+    hits=$(git grep -l -i -F "$pat" "$c" -- 2>/dev/null | sed "s|^$c:||" | grep -v '^\.gitignore$' | grep -v '^\.githooks/')
+    if [ -n "$hits" ]; then
+      echo "pre-push: BLOCKED — '$pat' found in commit $(git rev-parse --short "$c"):"
+      echo "$hits" | sed 's/^/    /'
+      FAIL=1
+    fi
+  done
+done < "$PATTERNS_FILE"
+
+if [ "$FAIL" = "1" ]; then
+  echo ""
+  echo "pre-push: nothing was pushed. Remove the PII and rewrite the offending"
+  echo "pre-push: commits — amending the tip is not enough if history still has it."
+  exit 1
+fi
+exit 0
