@@ -2,7 +2,15 @@ import { useMemo, useState } from 'react'
 import Bar from '../components/Bar'
 import { useData, usePayoffPlan, useMonthTotals } from '../lib/data'
 import { useNavigate } from 'react-router-dom'
-import { money, accountLabel, parseDateOnly, relativeTime, rateLabel, dueLabel } from '../lib/format'
+import {
+  money,
+  accountLabel,
+  parseDateOnly,
+  relativeTime,
+  rateLabel,
+  dueLabel,
+  daysUntil,
+} from '../lib/format'
 import { monthNumber, totalPlanMonths, projectedFinishDate } from '../lib/avalanche'
 import { syncNow } from '../lib/plaidLink'
 
@@ -11,9 +19,32 @@ const clamp01 = (n: number) => Math.max(0, Math.min(1, n))
 /**
  * Sub-line under a debt name. The owner leads the name, so it is not repeated
  * here; what earns the space instead is when the thing is due.
+ *
+ * The due part carries color of its own because a date is only worth showing if
+ * the urgent ones stand out — nine debts in grey is a list to read, not a thing
+ * to act on. Red for overdue or due within two days; never amber, which means
+ * the current target and nothing else.
  */
-function subLine(d: { apr: number | null; kind: string; next_due_on: string | null }): string {
-  return [rateLabel(d), dueLabel(d.next_due_on)].filter(Boolean).join(' · ')
+function DebtSubLine({
+  debt,
+}: {
+  debt: { apr: number | null; kind: string; next_due_on: string | null }
+}) {
+  const due = dueLabel(debt.next_due_on)
+  const days = daysUntil(debt.next_due_on)
+  const urgent = days !== null && days <= 2
+
+  return (
+    <div className="tiny muted tnum">
+      {rateLabel(debt)}
+      {due && (
+        <>
+          {' · '}
+          <span style={urgent ? { color: 'var(--red)', fontWeight: 700 } : undefined}>{due}</span>
+        </>
+      )}
+    </div>
+  )
 }
 
 /**
@@ -456,7 +487,7 @@ export default function Home() {
                   ) : (
                     <div className="sm">{accountLabel(d)}</div>
                   )}
-                  <div className="tiny muted tnum">{subLine(d)}</div>
+                  <DebtSubLine debt={d} />
                 </div>
                 <div style={{ textAlign: 'right' }}>
                   <div
