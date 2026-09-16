@@ -112,6 +112,18 @@ export function rateLabel(a: { apr: number | null; kind: string }): string {
   return a.kind === 'tax' ? 'payment plan' : 'rate not reported'
 }
 
+/** How many days until a due date. Negative means past. Null when unknown. */
+export function daysUntil(iso: string | null): number | null {
+  if (!iso) return null
+  const [y, m, d] = iso.split('-').map(Number)
+  if (!y || !m || !d) return null
+  const due = new Date(y, m - 1, d)
+  const n = new Date()
+  return Math.round(
+    (due.getTime() - new Date(n.getFullYear(), n.getMonth(), n.getDate()).getTime()) / 86400000,
+  )
+}
+
 /** "due in 3 days" / "due today" / "6 days overdue". Null when nothing is known. */
 export function dueLabel(iso: string | null): string | null {
   if (!iso) return null
