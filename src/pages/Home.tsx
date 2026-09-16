@@ -314,8 +314,18 @@ export default function Home() {
         {money(plan.totalOwed)}
       </div>
 
-      <div className="sm muted tnum" style={{ margin: '5px 0 13px' }}>
+      <div className="sm muted tnum" style={{ margin: '5px 0 2px' }}>
         {money(plan.cleared)} cleared so far
+      </div>
+
+      {/* What actually leaves each month. The total owed says how big the thing
+          is; this says what is being thrown at it, which is the other half of
+          the question and was nowhere on the screen. It stays constant as debts
+          clear — a cleared minimum rolls into the next target rather than being
+          kept — so it is a rate, not a running tally. */}
+      <div className="tiny muted tnum" style={{ marginBottom: 13 }}>
+        {money(plan.monthlyOutlay)} a month · {money(plan.minimumsTotal)} in minimums
+        {plan.attackFund > 0 ? ` + ${money(plan.attackFund)} attack` : ''}
       </div>
 
       <div style={{ marginBottom: 20 }}>

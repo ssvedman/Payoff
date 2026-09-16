@@ -40,7 +40,7 @@ export interface SimResult {
 /** Guard against a non-converging plan producing an infinite loop. */
 const MAX_MONTHS = 600
 
-const round2 = (n: number) => Math.round(n * 100) / 100
+export const round2 = (n: number) => Math.round(n * 100) / 100
 
 /**
  * The fixed monthly outlay: every open debt's minimum plus the attack fund.

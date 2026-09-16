@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { supabase } from './supabase'
 import { useAuth } from './auth'
 import { isoDate } from './format'
-import { currentTarget, inAvalancheOrder, simulate, type SimDebt } from './avalanche'
+import { currentTarget, inAvalancheOrder, monthlyPool, round2, simulate, type SimDebt } from './avalanche'
 import type {
   AccountRow,
   BudgetLineRow,
@@ -335,6 +335,17 @@ export function usePayoffPlan() {
     }))
 
     const sim = simulate(simDebts, plan.attack_fund)
+
+    /**
+     * What goes out to debt each month: every minimum plus the attack fund.
+     *
+     * Taken from the simulation's own pool rather than re-added here, so the
+     * figure on screen and the figure the projection runs on cannot disagree.
+     * It stays constant as debts clear, which is the point of the method — a
+     * cleared minimum rolls into the next target rather than being kept.
+     */
+    const monthlyOutlay = monthlyPool(simDebts, plan.attack_fund)
+    const minimumsTotal = round2(monthlyOutlay - plan.attack_fund)
     const target = currentTarget(
       debts.filter((d) => !isCleared(d)).map((d) => ({ ...d, payoffOrder: d.payoff_order })),
     ) as (Account & { payoffOrder: number }) | null
@@ -351,6 +362,8 @@ export function usePayoffPlan() {
       monthlySavings: plan.monthly_savings,
       savingsRemaining: Math.max(0, plan.deposit_target - (savings?.balance ?? 0)),
       attackFund: plan.attack_fund,
+      monthlyOutlay,
+      minimumsTotal,
       planStartedOn: plan.plan_started_on,
     }
   }, [debts, plan, savings, progress])
