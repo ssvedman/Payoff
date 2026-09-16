@@ -204,7 +204,7 @@ export default function Accounts() {
     if (a.kind === 'savings') {
       if (plan) parts.push(`target ${money(plan.deposit_target)}`)
     } else if (a.kind !== 'checking') {
-      parts.push(rateLabel(a))
+      parts.push(rateLabel(a), `min ${minimum(a.minimum_payment)}`, dueLabel(a.next_due_on) ?? '')
     }
     parts.push(a.balanceUpdatedAt ? `updated ${relativeTime(a.balanceUpdatedAt)}` : 'no update yet')
     return parts.filter(Boolean).join(' · ')
@@ -308,6 +308,7 @@ export default function Accounts() {
                           {accountLabel(a)}
                         </div>
                         <div className="tiny muted tnum">{syncedSub(a)}</div>
+                        <EditTerms account={a} onSaved={refresh} />
                       </td>
                       <td
                         className="tnum sm"
@@ -339,6 +340,7 @@ export default function Accounts() {
                         {accountLabel(a)}
                       </div>
                       <div className="tiny muted tnum">{manualSub(a)}</div>
+                      <EditTerms account={a} onSaved={refresh} />
                     </td>
                     <td style={{ textAlign: 'right' }}>
                       <input
@@ -606,6 +608,146 @@ function AddDebt({ owners, onAdded }: { owners: string[]; onAdded: () => void })
       <div className="tiny muted" style={{ marginTop: 8, lineHeight: 1.5 }}>
         It slots into the payoff queue by rate — highest first — so nothing needs
         reordering by hand.
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Change a debt's terms: rate, minimum payment, and the day it falls due.
+ *
+ * These could only be set when an account was created, or by the bank for a
+ * connected card. Everything else was fixed at whatever it was seeded with — and
+ * a rate that changes, a promotional period ending, a minimum that moves with the
+ * balance, had no way in at all.
+ *
+ * The day of the month is asked for rather than a date, because that is what a
+ * statement actually tells you and it stays true next month. The date itself is
+ * rolled forward from it.
+ */
+function EditTerms({ account, onSaved }: { account: Account; onSaved: () => void | Promise<void> }) {
+  const [open, setOpen] = useState(false)
+  const [rate, setRate] = useState('')
+  const [min, setMin] = useState('')
+  const [dueDay, setDueDay] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  // Re-seed from the account each time it opens, so the fields show what is
+  // currently on record rather than whatever was typed and abandoned last time.
+  useEffect(() => {
+    if (!open) return
+    setRate(account.apr === null ? '' : String(account.apr))
+    setMin(account.minimum_payment ? String(account.minimum_payment) : '')
+    setDueDay(account.due_day === null || account.due_day === undefined ? '' : String(account.due_day))
+    setErr(null)
+  }, [open, account.apr, account.minimum_payment, account.due_day])
+
+  const num = (v: string) => {
+    const n = Number(v.replace(/[^0-9.]/g, ''))
+    return Number.isFinite(n) ? n : null
+  }
+
+  async function save() {
+    setBusy(true)
+    setErr(null)
+    const { error } = await supabase.rpc('update_debt_terms', {
+      p_account_id: account.id,
+      p_apr: rate.trim() === '' ? null : num(rate),
+      p_minimum: min.trim() === '' ? null : num(min),
+      p_due_day: dueDay.trim() === '' ? null : Math.round(num(dueDay) ?? 0),
+      p_clear_apr: rate.trim() === '' && account.apr !== null,
+      p_clear_due_day: dueDay.trim() === '' && !!account.due_day,
+    })
+    setBusy(false)
+    if (error) {
+      setErr(error.message)
+      return
+    }
+    setOpen(false)
+    await onSaved()
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="tiny muted"
+        aria-label={`Edit the rate, minimum and due day for ${account.name}`}
+        style={{
+          background: 'none',
+          border: 'none',
+          padding: '2px 0 0',
+          font: 'inherit',
+          cursor: 'pointer',
+          textDecoration: 'underline',
+        }}
+      >
+        terms
+      </button>
+    )
+  }
+
+  const field = { width: '100%', padding: 8, fontSize: 13, marginTop: 3 } as const
+
+  return (
+    <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--line)' }}>
+      <div style={{ display: 'flex', gap: 7 }}>
+        <label className="tiny muted" style={{ flex: 1 }}>
+          Rate %
+          <input
+            style={field}
+            className="tnum"
+            inputMode="decimal"
+            value={rate}
+            onChange={(e) => setRate(e.target.value)}
+            placeholder="none"
+          />
+        </label>
+        <label className="tiny muted" style={{ flex: 1 }}>
+          Minimum
+          <input
+            style={field}
+            className="tnum"
+            inputMode="decimal"
+            value={min}
+            onChange={(e) => setMin(e.target.value)}
+            placeholder="0.00"
+          />
+        </label>
+        <label className="tiny muted" style={{ flex: 1 }}>
+          Due day
+          <input
+            style={field}
+            className="tnum"
+            inputMode="numeric"
+            value={dueDay}
+            onChange={(e) => setDueDay(e.target.value)}
+            placeholder="1–28"
+          />
+        </label>
+      </div>
+
+      <div className="tiny muted" style={{ marginTop: 6, lineHeight: 1.45 }}>
+        {account.plaid_account_id
+          ? 'This account is connected, so the bank overwrites the rate, minimum and due date each night. Anything set here holds only until it next reports.'
+          : 'The day of the month, not a date — it rolls forward on its own. Changing the rate re-orders the payoff queue.'}
+      </div>
+
+      {err && (
+        <div className="tiny" style={{ color: 'var(--red)', marginTop: 6 }}>
+          {err}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 7, marginTop: 9 }}>
+        <button className="btn" disabled={busy} onClick={() => void save()}>
+          {busy ? 'Saving…' : 'Save terms'}
+        </button>
+        <button className="btn ghost" disabled={busy} onClick={() => setOpen(false)}>
+          Cancel
+        </button>
       </div>
     </div>
   )
