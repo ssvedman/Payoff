@@ -1,23 +1,8 @@
 import { Fragment, useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
-import { useAuth } from '../lib/auth'
+import Recategorizer, { bucketStyle } from '../components/Recategorizer'
 import { useData, type Transaction } from '../lib/data'
-import { ruleTextFor } from '../lib/categorize'
 import { accountLabel, dayHeading, isoDate, signedMoney, MONTH_NAMES } from '../lib/format'
-import type { Bucket, MerchantRuleRow, TransactionRow } from '../lib/database.types'
-
-/** Pill colors per BUILD.md §8. Amber is "Optional" only, exactly as mockups.html shows. */
-const BUCKETS: { key: Bucket; label: string; bg: string; tx: string }[] = [
-  { key: 'fixed', label: 'Fixed', bg: 'var(--neutral-bg)', tx: 'var(--neutral-tx)' },
-  { key: 'optional', label: 'Optional', bg: 'var(--amber-bg)', tx: 'var(--amber-tx)' },
-  { key: 'attack', label: 'Attack', bg: 'var(--green-bg)', tx: 'var(--green-tx)' },
-  { key: 'savings', label: 'Savings', bg: 'var(--green-bg)', tx: 'var(--green-tx)' },
-  { key: 'income', label: 'Income', bg: 'var(--green-bg)', tx: 'var(--green-tx)' },
-  { key: 'transfer', label: 'Transfer', bg: 'var(--neutral-bg)', tx: 'var(--neutral-tx)' },
-  { key: 'review', label: 'Review', bg: 'var(--red-bg)', tx: 'var(--red-tx)' },
-]
-
-const bucketStyle = (b: Bucket) => BUCKETS.find((x) => x.key === b) ?? BUCKETS[6]
 
 type Filter = 'all' | 'review' | 'optional'
 
@@ -27,12 +12,8 @@ const FILTERS: { key: Filter; label: string }[] = [
   { key: 'optional', label: 'Optional' },
 ]
 
-/** Same haystack the categorization chain uses: raw descriptor plus merchant name. */
-const matchesRuleText = (t: Transaction, text: string) =>
-  `${t.name ?? ''} ${t.merchant_name ?? ''}`.toLowerCase().includes(text)
-
 export default function Activity() {
-  const { loading, error, accounts, transactions: currentMonthTxns, refresh, budgetLines } = useData()
+  const { loading, error, accounts, transactions: currentMonthTxns, refresh } = useData()
 
   /**
    * Which month is on screen. The shared data layer loads the current month only,
@@ -146,7 +127,6 @@ export default function Activity() {
 
   /** The current month comes from the shared loader; older months from here. */
   const transactions = thisMonth ? currentMonthTxns : (pastTxns ?? [])
-  const { user } = useAuth()
 
   const [filter, setFilter] = useState<Filter>('all')
 
@@ -188,8 +168,6 @@ export default function Activity() {
     void loadReview()
   }, [filter, loadReview])
   const [openId, setOpenId] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState<string | null>(null)
 
   const accountName = useMemo(() => {
     // Owner-first, matching the queue and the accounts list.
@@ -217,103 +195,12 @@ export default function Activity() {
     return groups
   }, [visible])
 
-
-  /** The budget lines belonging to a bucket. Only fixed and optional have any. */
-  const linesFor = useCallback(
-    (bucket: string) =>
-      budgetLines
-        .filter((l) => l.bucket === bucket)
-        .sort((a, b) => a.sort_order - b.sort_order),
-    [budgetLines],
-  )
-
-  /**
-   * `lineId` is deliberately three-valued:
-   *   undefined — leave the budget line exactly as it is
-   *   null      — clear it
-   *   a string  — set it
-   *
-   * The distinction matters. An earlier version wrote `lineId ?? null`, so simply
-   * re-tapping the bucket a transaction was already in silently erased its line —
-   * changing a label destroyed data the user never touched.
-   */
-  async function choose(t: Transaction, chosen: Bucket, lineId?: string | null) {
-    setSaving(true)
-    setSaveError(null)
-    try {
-      const text = ruleTextFor(t)
-
-      // a. The merchant rule, so the choice sticks for that merchant.
-      // Every payload below is checked against the generated Insert/Update shapes —
-      // no casts, so a renamed column fails the build rather than the write.
-      if (text) {
-        const rule: Partial<MerchantRuleRow> = {
-          match_text: text,
-          bucket: chosen,
-          // A rule pins the line as well, so correcting one coffee shop teaches
-          // every future one rather than just this row. Left untouched when no
-          // line was part of this choice.
-          ...(lineId === undefined ? {} : { budget_line_id: lineId }),
-          created_by: user?.id ?? null,
-        }
-        const { error: ruleError } = await supabase
-          .from('merchant_rules')
-          .upsert(rule, { onConflict: 'match_text' })
-        if (ruleError) throw ruleError
-      }
-
-      // b. This transaction, marked manual so nothing recomputes it.
-      const manual: Partial<TransactionRow> = {
-        bucket: chosen,
-        bucket_source: 'manual',
-        ...(lineId === undefined ? {} : { budget_line_id: lineId }),
-      }
-      const { error: txError } = await supabase
-        .from('transactions')
-        .update(manual)
-        .eq('id', t.id)
-      if (txError) throw txError
-
-      // c. The rest of the loaded month, in one call. Manual overrides are left alone.
-      const ids = text
-        ? transactions
-            .filter((o) => o.id !== t.id && o.bucket_source !== 'manual' && matchesRuleText(o, text))
-            .map((o) => o.id)
-        : []
-      if (ids.length > 0) {
-        const byRule: Partial<TransactionRow> = {
-          bucket: chosen,
-          bucket_source: 'rule',
-          ...(lineId === undefined ? {} : { budget_line_id: lineId }),
-        }
-        const { error: bulkError } = await supabase
-          .from('transactions')
-          .update(byRule)
-          .in('id', ids)
-        if (bulkError) throw bulkError
-      }
-
-      // d. Re-read whichever month is on screen — and the review queue too, if
-      // that is what is being worked through. Without this a row kept its place
-      // in the queue after being categorised, so the list never got shorter and
-      // there was no way to tell what was left.
-      await refresh()
-      await loadMonth()
-      if (filter === 'review') await loadReview()
-      setOpenId(null)
-    } catch (e) {
-      console.error('Recategorization failed', e)
-      setSaveError('That label did not save.')
-    } finally {
-      setSaving(false)
-    }
-  }
-
   return (
     <div className="page">
       <div style={{ fontWeight: 700, fontSize: 20, marginBottom: 4 }}>Activity</div>
       <div className="tiny muted" style={{ marginBottom: 14 }}>
-        Tap a label to recategorize. It sticks for that merchant.
+        Tap a label to change it. You choose whether it applies to that one
+        transaction or to everything from the same merchant.
       </div>
 
       {/* Month switcher. Forward is disabled at the current month — there is
@@ -452,9 +339,6 @@ export default function Activity() {
                   const pill = bucketStyle(t.bucket)
                   const open = openId === t.id
                   const sub = t.pending ? `${accountName(t.account_id)} · pending` : accountName(t.account_id)
-                  // Empty only when the row has neither a merchant name nor a descriptor,
-                  // in which case no rule is written and the change is this row alone.
-                  const ruleText = ruleTextFor(t)
                   return (
                     <Fragment key={t.id}>
                       <tr>
@@ -470,10 +354,7 @@ export default function Activity() {
                             className="pill"
                             aria-expanded={open}
                             aria-label={`${t.name} is labelled ${pill.label}. Change label.`}
-                            onClick={() => {
-                              setSaveError(null)
-                              setOpenId(open ? null : t.id)
-                            }}
+                            onClick={() => setOpenId(open ? null : t.id)}
                             style={{ background: pill.bg, color: pill.tx }}
                           >
                             {pill.label}
@@ -494,89 +375,16 @@ export default function Activity() {
                       {open && (
                         <tr>
                           <td colSpan={3} style={{ paddingTop: 0 }}>
-                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                              {BUCKETS.map((b) => (
-                                <button
-                                  key={b.key}
-                                  type="button"
-                                  className="pill"
-                                  disabled={saving}
-                                  onClick={() =>
-                                    // A line belongs to exactly one bucket, so a real
-                                    // bucket change clears it. Re-tapping the bucket it
-                                    // is already in leaves the line untouched.
-                                    void choose(t, b.key, b.key === t.bucket ? undefined : null)
-                                  }
-                                  style={{
-                                    background: b.bg,
-                                    color: b.tx,
-                                    opacity: saving ? 0.5 : 1,
-                                    boxShadow: t.bucket === b.key ? 'inset 0 0 0 1px var(--ink)' : undefined,
-                                  }}
-                                >
-                                  {b.label}
-                                </button>
-                              ))}
-                            </div>
-
-                            {/* Which target it counts against. Only fixed and
-                                optional have lines; the other buckets are not
-                                budgeted, so nothing is offered for them. */}
-                            {linesFor(t.bucket).length > 0 && (
-                              <div
-                                style={{
-                                  display: 'flex',
-                                  gap: 6,
-                                  flexWrap: 'wrap',
-                                  alignItems: 'center',
-                                  marginTop: 8,
-                                  paddingTop: 8,
-                                  borderTop: '1px solid var(--line)',
-                                }}
-                              >
-                                <span className="tiny muted" style={{ marginRight: 2 }}>
-                                  Counts against
-                                </span>
-                                {linesFor(t.bucket).map((l) => {
-                                  const on = t.budget_line_id === l.id
-                                  return (
-                                    <button
-                                      key={l.id}
-                                      type="button"
-                                      className="pill"
-                                      disabled={saving}
-                                      onClick={() => void choose(t, t.bucket, on ? null : l.id)}
-                                      style={{
-                                        background: on ? 'var(--ink)' : 'var(--white)',
-                                        color: on ? '#fff' : 'var(--steel)',
-                                        border: on ? 'none' : '1px solid var(--line)',
-                                        opacity: saving ? 0.5 : 1,
-                                      }}
-                                    >
-                                      {l.line_name}
-                                    </button>
-                                  )
-                                })}
-                              </div>
-                            )}
-
-                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
-                              {/* Reported beside the buckets, where the tap happened —
-                                  a message at the top of a long list is never seen. */}
-                              <span
-                                className={saveError ? 'tiny' : 'tiny muted'}
-                                role="status"
-                                style={saveError ? { color: 'var(--red)' } : undefined}
-                              >
-                                {saving
-                                  ? 'Saving'
-                                  : saveError
-                                    ? saveError
-                                    : ruleText
-                                      ? `Applies to ${t.merchant_name ?? t.name} this month.`
-                                      : 'Applies to this transaction.'}
-                              </span>
-                            </div>
+                            <Recategorizer
+                              transaction={t}
+                              loaded={transactions}
+                              onDone={async () => {
+                                setOpenId(null)
+                                await refresh()
+                                await loadMonth()
+                                if (filter === 'review') await loadReview()
+                              }}
+                            />
                           </td>
                         </tr>
                       )}
