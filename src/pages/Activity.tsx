@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
-import Recategorizer, { bucketStyle } from '../components/Recategorizer'
+import Recategorizer, { bucketStyle, type MoveNotice } from '../components/Recategorizer'
+import MoveNoticeBar from '../components/MoveNoticeBar'
 import GroupedActivity, { GROUPINGS, type GroupBy } from '../components/GroupedActivity'
 import { useData, type Transaction } from '../lib/data'
 import { accountLabel, dayHeading, isoDate, signedMoney, MONTH_NAMES } from '../lib/format'
@@ -179,11 +180,31 @@ export default function Activity() {
 
   const [openId, setOpenId] = useState<string | null>(null)
 
+  /**
+   * The last relabel, so the page can say where the row went.
+   *
+   * Every chip except "All" is a bucket filter, so a bucket change usually
+   * removes the row from what is on screen. Reported as a disappearance.
+   */
+  const [notice, setNotice] = useState<MoveNotice | null>(null)
+  const clearNotice = useCallback(() => setNotice(null), [])
+
+  // A relabel that lands outside the chip currently held down is gone from view.
+  const noticeLeftView =
+    notice !== null &&
+    notice.from !== null &&
+    filter !== 'all' &&
+    (filter === 'review' ? notice.to !== 'review' : notice.to !== filter)
+
   const accountName = useMemo(() => {
     // Owner-first, matching the queue and the accounts list.
     const byId = new Map(accounts.map((a) => [a.id, accountLabel(a)]))
     return (id: string) => byId.get(id) ?? 'Unlinked account'
   }, [accounts])
+
+  useEffect(() => {
+    setNotice(null)
+  }, [filter, anchor])
 
   const visible = useMemo(() => {
     const rows =
@@ -212,6 +233,8 @@ export default function Activity() {
         Tap a label to change it. You choose whether it applies to that one
         transaction or to everything from the same merchant.
       </div>
+
+      <MoveNoticeBar notice={notice} leftView={noticeLeftView} onDismiss={clearNotice} />
 
       {/* Month switcher. Forward is disabled at the current month — there is
           nothing recorded ahead of today, and an empty future month reads as a
@@ -364,7 +387,8 @@ export default function Activity() {
         <GroupedActivity
           rows={visible}
           groupBy={groupBy}
-          onChanged={async () => {
+          onChanged={async (n) => {
+            setNotice(n ?? null)
             await refresh()
             await loadMonth()
             if (filter === 'review') await loadReview()
@@ -424,8 +448,9 @@ export default function Activity() {
                             <Recategorizer
                               transaction={t}
                               loaded={transactions}
-                              onDone={async () => {
+                              onDone={async (n) => {
                                 setOpenId(null)
+                                setNotice(n ?? null)
                                 await refresh()
                                 await loadMonth()
                                 if (filter === 'review') await loadReview()

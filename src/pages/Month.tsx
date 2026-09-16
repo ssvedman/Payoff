@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import Bar from '../components/Bar'
 import { useData, useMonthTotals, type Transaction } from '../lib/data'
 import { money, moneyCents, MONTH_NAMES, accountLabel, dayHeading } from '../lib/format'
-import Recategorizer from '../components/Recategorizer'
+import Recategorizer, { type MoveNotice } from '../components/Recategorizer'
+import MoveNoticeBar from '../components/MoveNoticeBar'
 
 /**
  * /month — bucket progress for the current calendar month, the optional bucket
@@ -472,10 +473,25 @@ function BucketRows({
    */
   const [editing, setEditing] = useState<string | null>(null)
 
+  /**
+   * The last relabel made here.
+   *
+   * An opened bucket only lists its own rows, so relabelling one into a
+   * different bucket removes it from this list on the next refresh — and if it
+   * was the only row, the list empties. Both read as the transaction being
+   * deleted unless this says otherwise.
+   */
+  const [notice, setNotice] = useState<MoveNotice | null>(null)
+  const clearNotice = useCallback(() => setNotice(null), [])
+  const banner = (
+    <MoveNoticeBar notice={notice} leftView={notice?.from !== null} onDismiss={clearNotice} />
+  )
+
   if (rows.length === 0) {
     return (
-      <div className="tiny muted" style={{ padding: '9px 0 2px' }}>
-        {emptyNote}
+      <div style={{ padding: '9px 0 2px' }}>
+        {banner}
+        <div className="tiny muted">{emptyNote}</div>
       </div>
     )
   }
@@ -484,6 +500,7 @@ function BucketRows({
 
   return (
     <div style={{ marginTop: 9, borderTop: '1px solid var(--line)' }}>
+      <div style={{ paddingTop: 9 }}>{banner}</div>
       {rows.map((t) => (
         <div key={t.id} style={{ borderBottom: '1px solid var(--line)', padding: '7px 0' }}>
           <button
@@ -527,8 +544,9 @@ function BucketRows({
               <Recategorizer
                 transaction={t}
                 loaded={rows}
-                onDone={async () => {
+                onDone={async (n) => {
                   setEditing(null)
+                  setNotice(n ?? null)
                   await onChanged()
                 }}
               />
