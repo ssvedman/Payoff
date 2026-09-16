@@ -287,15 +287,36 @@ export function useData(): DataState {
 
 /** Everything the home screen derives from the raw rows. */
 export function usePayoffPlan() {
-  const { debts, plan, savings } = useData()
+  const { debts, plan, savings, progress } = useData()
 
   return useMemo(() => {
     if (!plan) return null
 
     const open = debts.filter((d) => !isCleared(d))
     const totalOwed = open.reduce((s, d) => s + d.balance, 0)
-    const openingTotal = debts.reduce((s, d) => s + d.opening_balance, 0)
-    const cleared = Math.max(0, openingTotal - totalOwed)
+
+    /**
+     * Progress is measured from the HIGHEST balance ever recorded for each debt,
+     * the same basis the per-account bars use.
+     *
+     * It used to measure from opening_balance — the figure entered when the plan
+     * began. That silently broke the moment a debt was added afterwards, because
+     * a new account's opening figure IS its current balance, so it contributed
+     * nothing to the total repaid however much had been paid off it before it was
+     * tracked. With most accounts added later, the headline claimed $39.93
+     * repaid while the rows beneath it showed one debt two thirds cleared and
+     * another at 97%. Two figures on one screen, disagreeing, both derived from
+     * the same data.
+     *
+     * Falls back to the opening figures only if the progress view has not loaded,
+     * so a slow read never divides by zero.
+     */
+    const peakTotal = debts.reduce(
+      (s, d) => s + (progress[d.id]?.peak_balance ?? d.opening_balance),
+      0,
+    )
+    const cleared = Math.max(0, peakTotal - totalOwed)
+    const openingTotal = peakTotal
 
     // Pass EVERY debt, cleared ones included with a zero balance — not just the
     // open ones. simulate() derives its constant monthly pool from the minimums of
@@ -332,7 +353,7 @@ export function usePayoffPlan() {
       attackFund: plan.attack_fund,
       planStartedOn: plan.plan_started_on,
     }
-  }, [debts, plan, savings])
+  }, [debts, plan, savings, progress])
 }
 
 /** Spend per bucket for the current month. Money out is positive. */
