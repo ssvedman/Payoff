@@ -57,6 +57,8 @@ export type AccountRow = {
   payment_aliases: string[]
   /** From the issuer, refreshed nightly. Null means "not stated this cycle". */
   next_due_on: string | null
+  /** Day of month a payment falls due, 1-28. Used when the bank reports none. */
+  due_day: number | null
   last_payment_on: string | null
   last_payment_amount: number | null
   last_statement_balance: number | null
@@ -249,6 +251,17 @@ export type Database = {
     Functions: {
       is_household_member: { Args: Record<string, never>; Returns: boolean }
       /** Inserts a typed-in debt and renumbers the queue by rate. Returns its id. */
+      update_debt_terms: {
+        Args: {
+          p_account_id: string
+          p_apr?: number | null
+          p_minimum?: number | null
+          p_due_day?: number | null
+          p_clear_apr?: boolean
+          p_clear_due_day?: boolean
+        }
+        Returns: undefined
+      }
       add_manual_debt: {
         Args: {
           p_name: string
