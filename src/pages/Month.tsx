@@ -1,7 +1,7 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import Bar from '../components/Bar'
-import { useData, useMonthTotals } from '../lib/data'
-import { money, MONTH_NAMES } from '../lib/format'
+import { useData, useMonthTotals, type Transaction } from '../lib/data'
+import { money, moneyCents, MONTH_NAMES, accountLabel, dayHeading } from '../lib/format'
 
 /**
  * /month — bucket progress for the current calendar month, the optional bucket
@@ -29,8 +29,35 @@ const ATTACK_DUE_DAY = 15
 const gap = (a: number, b: number) => Math.max(0, a - b)
 
 export default function Month() {
-  const { loading, error, transactions, budgetLines, plan } = useData()
+  const { loading, error, transactions, budgetLines, plan, accounts } = useData()
   const totals = useMonthTotals()
+
+  /**
+   * Which bucket is opened up.
+   *
+   * A bar says a bucket is at 155% of its target and stops there — the one
+   * question it provokes is "on what?", and answering it meant leaving for
+   * /activity, filtering, and reading back a figure that was no longer on screen.
+   * Opening it in place keeps the total next to the things that make it up.
+   */
+  const [openBucket, setOpenBucket] = useState<string | null>(null)
+
+  const nameOf = useMemo(() => {
+    const byId = new Map(accounts.map((a) => [a.id, accountLabel(a)]))
+    return (id: string) => byId.get(id) ?? 'Unlinked account'
+  }, [accounts])
+
+  /** Largest first: the rows worth looking at are the ones moving the total. */
+  const rowsIn = useMemo(() => {
+    const groups = new Map<string, Transaction[]>()
+    for (const t of transactions) {
+      const list = groups.get(t.bucket) ?? []
+      list.push(t)
+      groups.set(t.bucket, list)
+    }
+    for (const list of groups.values()) list.sort((a, b) => b.amount - a.amount)
+    return groups
+  }, [transactions])
 
   const today = new Date()
   const day = today.getDate()
@@ -198,48 +225,80 @@ export default function Month() {
       <div className="tnum sm muted" style={{ marginBottom: 20 }}>
         {income > 0 ? `${money(spentTotal)} spent of ${money(income)} in` : `${money(spentTotal)} spent`}
       </div>
+      <div className="tiny muted" style={{ marginBottom: 14 }}>
+        Tap a bucket to see what is in it.
+      </div>
 
       {/* Optional */}
       <div style={{ marginBottom: 17 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 5 }}>
-          <span style={{ fontWeight: 600 }}>Optional</span>
-          <span
-            className={offPace ? 'tnum' : 'tnum muted'}
-            style={offPace ? { color: 'var(--red)', fontWeight: 700 } : undefined}
-          >
-            {money(optionalSpent)} / {money(optionalTarget)}
-          </span>
-        </div>
+        <BucketHeader
+          label="Optional"
+          count={(rowsIn.get('optional') ?? []).length}
+          open={openBucket === 'optional'}
+          onToggle={() => setOpenBucket((c) => (c === 'optional' ? null : 'optional'))}
+          right={
+            <span
+              className={offPace ? 'tnum' : 'tnum muted'}
+              style={offPace ? { color: 'var(--red)', fontWeight: 700 } : undefined}
+            >
+              {money(optionalSpent)} / {money(optionalTarget)}
+            </span>
+          }
+        />
         <Bar pct={optionalTarget > 0 ? optionalSpent / optionalTarget : 0} color={optionalColor} />
         <div className="tnum tiny muted" style={{ marginTop: 4 }}>
           {overTarget
             ? `${money(optionalSpent - optionalTarget)} over, ${daysLeft} days remaining`
             : `${money(optionalTarget - optionalSpent)} left, ${daysLeft} days remaining`}
         </div>
+        {openBucket === 'optional' && (
+          <BucketRows
+            rows={rowsIn.get('optional') ?? []}
+            nameOf={nameOf}
+            emptyNote="Nothing discretionary this month."
+          />
+        )}
       </div>
 
       {/* Fixed */}
       <div style={{ marginBottom: 17 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 5 }}>
-          <span style={{ fontWeight: 600 }}>Fixed</span>
-          <span className="tnum muted">
-            {money(fixedSpent)} / {money(fixedTarget)}
-          </span>
-        </div>
+        <BucketHeader
+          label="Fixed"
+          count={(rowsIn.get('fixed') ?? []).length}
+          open={openBucket === 'fixed'}
+          onToggle={() => setOpenBucket((c) => (c === 'fixed' ? null : 'fixed'))}
+          right={
+            <span className="tnum muted">
+              {money(fixedSpent)} / {money(fixedTarget)}
+            </span>
+          }
+        />
         <Bar pct={fixedTarget > 0 ? fixedSpent / fixedTarget : 0} color="var(--steel)" />
+        {openBucket === 'fixed' && (
+          <BucketRows
+            rows={rowsIn.get('fixed') ?? []}
+            nameOf={nameOf}
+            emptyNote="Nothing committed has gone out yet this month."
+          />
+        )}
       </div>
 
       {/* Attack fund */}
       <div style={{ marginBottom: 17 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 5 }}>
-          <span style={{ fontWeight: 600 }}>Attack fund</span>
-          <span
-            className={attackMet ? 'tnum' : 'tnum muted'}
-            style={attackMet ? { color: 'var(--green)', fontWeight: 700 } : undefined}
-          >
-            {money(attackSpent)} sent
-          </span>
-        </div>
+        <BucketHeader
+          label="Attack fund"
+          count={(rowsIn.get('attack') ?? []).length}
+          open={openBucket === 'attack'}
+          onToggle={() => setOpenBucket((c) => (c === 'attack' ? null : 'attack'))}
+          right={
+            <span
+              className={attackMet ? 'tnum' : 'tnum muted'}
+              style={attackMet ? { color: 'var(--green)', fontWeight: 700 } : undefined}
+            >
+              {money(attackSpent)} sent
+            </span>
+          }
+        />
         <Bar
           pct={attackTarget > 0 ? attackSpent / attackTarget : 0}
           color={attackMet ? 'var(--green)' : 'var(--steel)'}
@@ -249,19 +308,31 @@ export default function Month() {
             {money(gap(attackTarget, attackSpent))} short of {money(attackTarget)}
           </div>
         )}
+        {openBucket === 'attack' && (
+          <BucketRows
+            rows={rowsIn.get('attack') ?? []}
+            nameOf={nameOf}
+            emptyNote="Nothing has reached the current target this month."
+          />
+        )}
       </div>
 
       {/* Savings */}
       <div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 5 }}>
-          <span style={{ fontWeight: 600 }}>Savings</span>
-          <span
-            className={savingsMet ? 'tnum' : 'tnum muted'}
-            style={savingsMet ? { color: 'var(--green)', fontWeight: 700 } : undefined}
-          >
-            {money(savingsSpent)} sent
-          </span>
-        </div>
+        <BucketHeader
+          label="Savings"
+          count={(rowsIn.get('savings') ?? []).length}
+          open={openBucket === 'savings'}
+          onToggle={() => setOpenBucket((c) => (c === 'savings' ? null : 'savings'))}
+          right={
+            <span
+              className={savingsMet ? 'tnum' : 'tnum muted'}
+              style={savingsMet ? { color: 'var(--green)', fontWeight: 700 } : undefined}
+            >
+              {money(savingsSpent)} sent
+            </span>
+          }
+        />
         <Bar
           pct={savingsTarget > 0 ? savingsSpent / savingsTarget : 0}
           color={savingsMet ? 'var(--green)' : 'var(--steel)'}
@@ -270,6 +341,13 @@ export default function Month() {
           <div className="tnum tiny muted" style={{ marginTop: 4 }}>
             {money(gap(savingsTarget, savingsSpent))} short of {money(savingsTarget)}
           </div>
+        )}
+        {openBucket === 'savings' && (
+          <BucketRows
+            rows={rowsIn.get('savings') ?? []}
+            nameOf={nameOf}
+            emptyNote="Nothing has moved to savings this month."
+          />
         )}
       </div>
 
@@ -352,5 +430,119 @@ export default function Month() {
         </table>
       </div>
     </div>
+  )
+}
+
+/**
+ * The transactions behind one bucket's bar.
+ *
+ * Deliberately NOT a link to /activity: the point of opening a bucket is to see
+ * what is in it while the total that prompted the question is still on screen.
+ * Sorted largest first, because the rows worth looking at are the ones moving
+ * the number.
+ */
+function BucketRows({
+  rows,
+  nameOf,
+  emptyNote,
+}: {
+  rows: Transaction[]
+  nameOf: (id: string) => string
+  emptyNote: string
+}) {
+  if (rows.length === 0) {
+    return (
+      <div className="tiny muted" style={{ padding: '9px 0 2px' }}>
+        {emptyNote}
+      </div>
+    )
+  }
+
+  const total = rows.reduce((s, t) => s + t.amount, 0)
+
+  return (
+    <div style={{ marginTop: 9, borderTop: '1px solid var(--line)' }}>
+      {rows.map((t) => (
+        <div
+          key={t.id}
+          style={{
+            display: 'flex',
+            alignItems: 'baseline',
+            justifyContent: 'space-between',
+            gap: 10,
+            padding: '7px 0',
+            borderBottom: '1px solid var(--line)',
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div className="sm" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {t.merchant_name ?? t.name}
+            </div>
+            <div className="tiny muted tnum">
+              {dayHeading(t.posted_on)} · {nameOf(t.account_id)}
+            </div>
+          </div>
+          {/* Money in is shown negative and green, matching /activity. */}
+          <div
+            className="tnum sm"
+            style={{ flexShrink: 0, color: t.amount < 0 ? 'var(--green)' : undefined }}
+          >
+            {moneyCents(t.amount)}
+          </div>
+        </div>
+      ))}
+      <div className="tiny muted tnum" style={{ paddingTop: 7, textAlign: 'right' }}>
+        {rows.length} {rows.length === 1 ? 'transaction' : 'transactions'} · {moneyCents(total)}
+      </div>
+    </div>
+  )
+}
+
+/** A bucket's heading, which is also the control that opens it. */
+function BucketHeader({
+  label,
+  right,
+  count,
+  open,
+  onToggle,
+}: {
+  label: string
+  right: React.ReactNode
+  count: number
+  open: boolean
+  onToggle: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      style={{
+        width: '100%',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'baseline',
+        gap: 10,
+        fontSize: 14,
+        marginBottom: 5,
+        background: 'none',
+        border: 'none',
+        padding: 0,
+        font: 'inherit',
+        cursor: 'pointer',
+        textAlign: 'left',
+        color: 'inherit',
+      }}
+    >
+      <span style={{ fontWeight: 600 }}>
+        {label}
+        <span className="tiny muted" style={{ fontWeight: 400 }}>
+          {' '}
+          {open ? '▴' : '▾'}
+          {count > 0 ? ` ${count}` : ''}
+        </span>
+      </span>
+      {right}
+    </button>
   )
 }
