@@ -10,7 +10,8 @@
  *      feed already records at merchant level
  *   3. Merchant rule — match_text found in lowercased name or merchant_name
  *   4. Account-based — a payment to the target account is attack, a minimum to any
- *      other debt is fixed, a transfer to savings is savings, a deposit is income
+ *      other debt is fixed, a transfer to savings is savings, a draw from a
+ *      business account into household checking is income, a deposit is income
  *   5. Plaid category map
  *   6. Fallback — review
  */
@@ -167,6 +168,37 @@ function namesAccount(haystack: string, accountName: string): boolean {
   return haystack.includes(n)
 }
 
+/**
+ * Does this descriptor name a business account of ours?
+ *
+ * Two ways a bank identifies the other side of an internal transfer, and both
+ * are needed: the account's last four ("Online Transfer from CHK ...1234") and
+ * the legal name the business pays under, which shares no word with whatever the
+ * account is nicknamed here. The names come from payment_aliases, which exists
+ * for exactly this — a descriptor that stands in for an account.
+ *
+ * The mask is matched only where a bank actually writes one: after an ellipsis,
+ * an x, a star, a hash, or "ending in". Four bare digits are far too weak on
+ * their own — a transaction reference number would match one constantly.
+ */
+export function namesBusinessAccount(
+  haystack: string,
+  names: string[],
+  masks: string[],
+): boolean {
+  for (const n of names) {
+    const needle = n.trim().toLowerCase()
+    if (needle.length >= 4 && haystack.includes(needle)) return true
+  }
+  for (const m of masks) {
+    // Digits only, so this can never be turned into a pattern by stored data.
+    if (!/^\d{3,6}$/.test(m)) continue
+    // Not followed by another digit, so a mask does not match inside a longer run.
+    if (new RegExp(`(?:\\.{2,}|[x*#]|ending in\\s*)\\s*${m}(?!\\d)`).test(haystack)) return true
+  }
+  return false
+}
+
 const PAYMENT_WORDS = /\b(payment|pmt|pymt|pymnt|autopay|auto pay|bill pay|billpay|epay|ach|xfer|transfer)\b/
 
 function looksLikePayment(haystack: string, plaidCategory: string | null): boolean {
@@ -200,6 +232,12 @@ export interface CategorizeArgs {
    * funding-leg step; empty disables it.
    */
   heldInstitutions?: string[]
+  /** Whether the account this row sits on is itself the business's. */
+  accountIsBusiness?: boolean
+  /** Names and aliases of our business accounts, lowercased. */
+  businessNames?: string[]
+  /** Last-four masks of our business accounts. */
+  businessMasks?: string[]
   /**
    * The account currently being attacked — lowest payoff_order still owing —
    * as its name plus any payment_aliases. Only payments to THIS account count
@@ -301,9 +339,32 @@ export function categorize(a: CategorizeArgs): { bucket: Bucket; source: 'auto' 
     if (a.savingsNames.some((n) => namesAccount(haystack, n))) {
       return { bucket: 'savings', source: 'auto' }
     }
-  } else if (a.amount < 0 && primaryOf(a.plaidCategory) === 'INCOME') {
+  } else if (a.amount < 0) {
+    /**
+     * Money arriving from the business is the household's draw on it.
+     *
+     * The bank calls it an internal transfer, and left at that it was counted as
+     * neither income nor anything else — so a household drawing its living from
+     * its own company showed months of spending against almost no income. It is
+     * the business paying the people who run it, which is exactly what income is.
+     *
+     * Only INTO a spending account, and only when the row is not already on a
+     * business account. The reverse direction is money the household puts INTO
+     * the business; that is positive, never reaches here, and stays a transfer
+     * rather than becoming negative income.
+     */
+    if (
+      !a.accountIsBusiness &&
+      a.accountKind === 'checking' &&
+      namesBusinessAccount(haystack, a.businessNames ?? [], a.businessMasks ?? [])
+    ) {
+      return { bucket: 'income', source: 'auto' }
+    }
+
     // A deposit is income.
-    return { bucket: 'income', source: 'auto' }
+    if (primaryOf(a.plaidCategory) === 'INCOME') {
+      return { bucket: 'income', source: 'auto' }
+    }
   }
 
   // 5. Plaid category map.

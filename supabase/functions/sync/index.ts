@@ -213,6 +213,15 @@ Deno.serve(async (req: Request) => {
    * funding leg from the purchase it funds. Connected accounts only — a manual
    * account has no feed and therefore mirrors nothing.
    */
+  /**
+   * The business's accounts, by every descriptor a bank might use for them.
+   * Money arriving from one of these into household checking is the household
+   * drawing on its own company, which is income rather than an internal move.
+   */
+  const businessAccounts = accounts.filter((a) => a.is_business)
+  const businessNames = businessAccounts.flatMap(namesOf)
+  const businessMasks = businessAccounts.map((a) => a.mask).filter((m): m is string => Boolean(m))
+
   const heldInstitutions = [
     ...new Set(
       accounts
@@ -484,6 +493,9 @@ Deno.serve(async (req: Request) => {
             amount: t.amount,
             accountKind: acct.kind,
             accountNames: namesOf(acct),
+            accountIsBusiness: acct.is_business,
+            businessNames,
+            businessMasks,
             heldInstitutions,
             targetNames,
             debtNames,
