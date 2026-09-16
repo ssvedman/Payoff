@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import Recategorizer, { bucketStyle } from '../components/Recategorizer'
+import GroupedActivity, { GROUPINGS, type GroupBy } from '../components/GroupedActivity'
 import { useData, type Transaction } from '../lib/data'
 import { accountLabel, dayHeading, isoDate, signedMoney, MONTH_NAMES } from '../lib/format'
 
@@ -167,6 +168,15 @@ export default function Activity() {
     if (filter !== 'review') return
     void loadReview()
   }, [filter, loadReview])
+  /**
+   * Whether the rows are read as a ledger or rolled up.
+   *
+   * A day-by-day list answers "what happened", which is the wrong question when
+   * something looks off — a pattern spread over forty-five unremarkable charges
+   * is invisible in it. Grouping puts the largest thing first.
+   */
+  const [groupBy, setGroupBy] = useState<GroupBy | null>(null)
+
   const [openId, setOpenId] = useState<string | null>(null)
 
   const accountName = useMemo(() => {
@@ -270,6 +280,32 @@ export default function Activity() {
         })}
       </div>
 
+      {/* How the same rows are read. Separate from the filter above, which
+          decides WHICH rows: these are two different questions and collapsing
+          them into one row of pills would imply picking one clears the other. */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span className="tiny muted" style={{ marginRight: 2 }}>Group by</span>
+        {[{ key: null, label: 'Date' }, ...GROUPINGS].map((g) => {
+          const on = groupBy === g.key
+          return (
+            <button
+              key={g.label}
+              type="button"
+              className="pill"
+              aria-pressed={on}
+              onClick={() => setGroupBy(g.key as GroupBy | null)}
+              style={
+                on
+                  ? { background: 'var(--ink)', color: '#fff' }
+                  : { background: 'var(--white)', color: 'var(--steel)', border: '1px solid var(--line)' }
+              }
+            >
+              {g.label}
+            </button>
+          )
+        })}
+      </div>
+
       {error && (
         <div className="banner banner--red sm" style={{ marginBottom: 14, fontWeight: 600 }}>
           Activity could not be loaded.
@@ -324,6 +360,16 @@ export default function Activity() {
                 : 'Nothing in this filter.'}
           </div>
         )
+      ) : groupBy ? (
+        <GroupedActivity
+          rows={visible}
+          groupBy={groupBy}
+          onChanged={async () => {
+            await refresh()
+            await loadMonth()
+            if (filter === 'review') await loadReview()
+          }}
+        />
       ) : (
         days.map((day, di) => (
           <div key={day.date}>
