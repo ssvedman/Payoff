@@ -61,7 +61,19 @@ export default function Recategorizer({
   const vendorKey = vendorKeyFor(transaction)
   const canRule = vendorKey.length > 0
 
-  const linesFor = (b: Bucket) => budgetLines.filter((l) => l.bucket === b)
+  /**
+   * EVERY budget line, not just the ones belonging to the bucket currently set.
+   *
+   * A line belongs to exactly one bucket, so choosing a line already decides the
+   * bucket — asking for the bucket first was redundant, and worse, it hid the
+   * line being looked for. A superstore charge sitting in optional could not be
+   * assigned to a grocery budget at all without first pressing Fixed, which also
+   * cleared the line, so the two-step was invisible and the category looked
+   * missing entirely.
+   *
+   * Picking a line now sets both.
+   */
+  const allLines = budgetLines
 
   async function apply(bucket: Bucket, lineId?: string | null) {
     setBusy(true)
@@ -156,8 +168,8 @@ export default function Recategorizer({
       </div>
 
       {/* Which target it counts against. Only fixed and optional have lines; the
-          other buckets are not budgeted, so nothing is offered for them. */}
-      {linesFor(transaction.bucket).length > 0 && (
+          other buckets are not budgeted, so a line simply moves it to one. */}
+      {allLines.length > 0 && (
         <div
           style={{
             display: 'flex',
@@ -172,26 +184,36 @@ export default function Recategorizer({
           <span className="tiny muted" style={{ marginRight: 2 }}>
             Counts against
           </span>
-          {linesFor(transaction.bucket).map((l) => (
-            <button
-              key={l.id}
-              type="button"
-              className="pill"
-              disabled={busy}
-              onClick={() => void apply(transaction.bucket, l.id)}
-              style={{
-                background: 'var(--neutral-bg)',
-                color: 'var(--neutral-tx)',
-                opacity: busy ? 0.5 : 1,
-                boxShadow:
-                  transaction.budget_line_id === l.id ? 'inset 0 0 0 1px var(--ink)' : undefined,
-              }}
-            >
-              {l.line_name}
-            </button>
-          ))}
+          {allLines.map((l) => {
+            const chosen = transaction.budget_line_id === l.id
+            // A line from the other bucket is shown in that bucket's colour, so
+            // it is obvious that picking it moves the transaction as well.
+            const other = l.bucket !== transaction.bucket
+            const palette = bucketStyle(l.bucket as Bucket)
+            return (
+              <button
+                key={l.id}
+                type="button"
+                className="pill"
+                disabled={busy}
+                onClick={() => void apply(l.bucket as Bucket, l.id)}
+                title={other ? `Moves this to ${l.bucket}` : undefined}
+                style={{
+                  background: other ? palette.bg : 'var(--neutral-bg)',
+                  color: other ? palette.tx : 'var(--neutral-tx)',
+                  opacity: busy ? 0.5 : 1,
+                  boxShadow: chosen ? 'inset 0 0 0 1px var(--ink)' : undefined,
+                }}
+              >
+                {l.line_name}
+              </button>
+            )
+          })}
         </div>
       )}
+      <div className="tiny muted" style={{ marginTop: 6, lineHeight: 1.45 }}>
+        A category belongs to one bucket, so choosing one sets both.
+      </div>
 
       {err && (
         <div className="tiny" style={{ color: 'var(--red)', marginTop: 7 }}>
