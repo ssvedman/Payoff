@@ -51,6 +51,11 @@ export type AccountRow = {
    */
   institution: string | null
   /**
+   * The institution's own last four. Display only — never a full number — and the
+   * only part of an account's identity guaranteed to be unique.
+   */
+  mask: string | null
+  /**
    * Statement descriptors that stand in for this account's name, so a payment to
    * it is recognized as one when the bank's wording shares no word with it.
    */

@@ -182,16 +182,21 @@ export default function Accounts() {
     setSaving(false)
   }
 
+  /** "Northbank \u20228802" — the issuer, plus the digits printed on the card. */
+  const instMask = (a: Account) =>
+    [a.institution, a.mask ? `\u2022\u2022${a.mask}` : ''].filter(Boolean).join(' ') || null
+
   /** "12.34% · min $100 · owner" — "payment plan" stands in where there is no rate. */
   /**
    * The owner now leads the account name, so it is not repeated here. The type
    * label leads instead: "Auto loan" answers the first question a reader has when
    * scanning a list of nine debts, which the rate alone does not. The issuing bank
    * follows it, because two "Credit card" rows are only tellable apart by who
-   * issued them.
+   * issued them — and where even that is not enough (this household holds two
+   * cards from one issuer sharing a nickname), the bank's own last four is.
    */
   function syncedSub(a: Account) {
-    const parts = [a.type_label, a.institution]
+    const parts = [a.type_label, instMask(a)]
     if (a.kind === 'card' || a.kind === 'loan' || a.kind === 'tax') {
       parts.push(rateLabel(a), `min ${minimum(a.minimum_payment)}`, dueLabel(a.next_due_on) ?? '')
     }
@@ -200,7 +205,7 @@ export default function Accounts() {
 
   /** "12.34% · updated 3 days ago" — savings shows its deposit target instead of a rate. */
   function manualSub(a: Account) {
-    const parts: (string | null)[] = [a.type_label, a.institution]
+    const parts: (string | null)[] = [a.type_label, instMask(a)]
     if (a.kind === 'savings') {
       if (plan) parts.push(`target ${money(plan.deposit_target)}`)
     } else if (a.kind !== 'checking') {

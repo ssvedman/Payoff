@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useData, type Transaction } from '../lib/data'
-import { moneyCents, accountLabel, dayHeading } from '../lib/format'
+import { moneyCents, accountDescriptor, dayHeading } from '../lib/format'
 import Recategorizer, { bucketStyle, type MoveNotice } from './Recategorizer'
 
 /**
@@ -47,7 +47,7 @@ export default function GroupedActivity({
   const [editing, setEditing] = useState<string | null>(null)
 
   const groups = useMemo<Group[]>(() => {
-    const accountName = new Map(accounts.map((a) => [a.id, accountLabel(a)]))
+    const accountName = new Map(accounts.map((a) => [a.id, accountDescriptor(a)]))
     const lineName = new Map(budgetLines.map((l) => [l.id, l.line_name]))
 
     const map = new Map<string, Group>()
