@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import Bar from '../components/Bar'
 import { useData, useMonthTotals, type Transaction } from '../lib/data'
 import { money, moneyCents, MONTH_NAMES, accountLabel, dayHeading } from '../lib/format'
+import Recategorizer from '../components/Recategorizer'
 
 /**
  * /month — bucket progress for the current calendar month, the optional bucket
@@ -29,7 +30,7 @@ const ATTACK_DUE_DAY = 15
 const gap = (a: number, b: number) => Math.max(0, a - b)
 
 export default function Month() {
-  const { loading, error, transactions, budgetLines, plan, accounts } = useData()
+  const { loading, error, transactions, budgetLines, plan, accounts, refresh } = useData()
   const totals = useMonthTotals()
 
   /**
@@ -226,7 +227,7 @@ export default function Month() {
         {income > 0 ? `${money(spentTotal)} spent of ${money(income)} in` : `${money(spentTotal)} spent`}
       </div>
       <div className="tiny muted" style={{ marginBottom: 14 }}>
-        Tap a bucket to see what is in it.
+        Tap a bucket to see what is in it, then a transaction to relabel it.
       </div>
 
       {/* Optional */}
@@ -256,6 +257,7 @@ export default function Month() {
             rows={rowsIn.get('optional') ?? []}
             nameOf={nameOf}
             emptyNote="Nothing discretionary this month."
+            onChanged={refresh}
           />
         )}
       </div>
@@ -279,6 +281,7 @@ export default function Month() {
             rows={rowsIn.get('fixed') ?? []}
             nameOf={nameOf}
             emptyNote="Nothing committed has gone out yet this month."
+            onChanged={refresh}
           />
         )}
       </div>
@@ -313,6 +316,7 @@ export default function Month() {
             rows={rowsIn.get('attack') ?? []}
             nameOf={nameOf}
             emptyNote="Nothing has reached the current target this month."
+            onChanged={refresh}
           />
         )}
       </div>
@@ -347,6 +351,7 @@ export default function Month() {
             rows={rowsIn.get('savings') ?? []}
             nameOf={nameOf}
             emptyNote="Nothing has moved to savings this month."
+            onChanged={refresh}
           />
         )}
       </div>
@@ -445,11 +450,20 @@ function BucketRows({
   rows,
   nameOf,
   emptyNote,
+  onChanged,
 }: {
   rows: Transaction[]
   nameOf: (id: string) => string
   emptyNote: string
+  onChanged: () => void | Promise<void>
 }) {
+  /**
+   * Which row is being relabelled. A bucket total is exactly where a
+   * miscategorised charge becomes obvious — seeing it and not being able to fix
+   * it is the wrong place to stop, so the same editor /activity uses opens here.
+   */
+  const [editing, setEditing] = useState<string | null>(null)
+
   if (rows.length === 0) {
     return (
       <div className="tiny muted" style={{ padding: '9px 0 2px' }}>
@@ -463,32 +477,55 @@ function BucketRows({
   return (
     <div style={{ marginTop: 9, borderTop: '1px solid var(--line)' }}>
       {rows.map((t) => (
-        <div
-          key={t.id}
-          style={{
-            display: 'flex',
-            alignItems: 'baseline',
-            justifyContent: 'space-between',
-            gap: 10,
-            padding: '7px 0',
-            borderBottom: '1px solid var(--line)',
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div className="sm" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {t.merchant_name ?? t.name}
-            </div>
-            <div className="tiny muted tnum">
-              {dayHeading(t.posted_on)} · {nameOf(t.account_id)}
-            </div>
-          </div>
-          {/* Money in is shown negative and green, matching /activity. */}
-          <div
-            className="tnum sm"
-            style={{ flexShrink: 0, color: t.amount < 0 ? 'var(--green)' : undefined }}
+        <div key={t.id} style={{ borderBottom: '1px solid var(--line)', padding: '7px 0' }}>
+          <button
+            type="button"
+            onClick={() => setEditing((c) => (c === t.id ? null : t.id))}
+            aria-expanded={editing === t.id}
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'baseline',
+              justifyContent: 'space-between',
+              gap: 10,
+              background: 'none',
+              border: 'none',
+              padding: 0,
+              font: 'inherit',
+              color: 'inherit',
+              textAlign: 'left',
+              cursor: 'pointer',
+            }}
           >
-            {moneyCents(t.amount)}
-          </div>
+            <div style={{ minWidth: 0 }}>
+              <div className="sm" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {t.merchant_name ?? t.name}
+              </div>
+              <div className="tiny muted tnum">
+                {dayHeading(t.posted_on)} · {nameOf(t.account_id)}
+              </div>
+            </div>
+            {/* Money in is shown negative and green, matching /activity. */}
+            <div
+              className="tnum sm"
+              style={{ flexShrink: 0, color: t.amount < 0 ? 'var(--green)' : undefined }}
+            >
+              {moneyCents(t.amount)}
+            </div>
+          </button>
+
+          {editing === t.id && (
+            <div style={{ marginTop: 9 }}>
+              <Recategorizer
+                transaction={t}
+                loaded={rows}
+                onDone={async () => {
+                  setEditing(null)
+                  await onChanged()
+                }}
+              />
+            </div>
+          )}
         </div>
       ))}
       <div className="tiny muted tnum" style={{ paddingTop: 7, textAlign: 'right' }}>
