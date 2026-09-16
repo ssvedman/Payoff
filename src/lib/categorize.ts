@@ -341,14 +341,22 @@ export function categorize(a: CategorizeArgs): { bucket: Bucket; source: 'auto' 
      * its own company showed months of spending against almost no income. It is
      * the business paying the people who run it, which is exactly what income is.
      *
-     * Only INTO a spending account, and only when the row is not already on a
-     * business account. The reverse direction is money the household puts INTO
-     * the business; that is positive, never reaches here, and stays a transfer
-     * rather than becoming negative income.
+     * ANY household account, not just checking. Restricting it to checking was
+     * an assumption about where a draw lands, and it was wrong: a standing
+     * monthly contribution to the bills account arrives in a SAVINGS account and
+     * is no less income for that. Where the money lands is a choice about what
+     * to do with it, not evidence of what it is.
+     *
+     * A debt account cannot reach here — the branch above takes every row on one
+     * — and that is correct rather than incidental: money arriving on a card is
+     * the mirror of a payment, and calling it income would invent money.
+     *
+     * The reverse direction is the household putting money INTO the business.
+     * That is positive, never reaches this branch, and stays a transfer rather
+     * than becoming negative income.
      */
     if (
       !a.accountIsBusiness &&
-      a.accountKind === 'checking' &&
       namesBusinessAccount(haystack, a.businessNames ?? [], a.businessMasks ?? [])
     ) {
       return { bucket: 'income', source: 'auto' }
