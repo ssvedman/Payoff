@@ -31,7 +31,11 @@ const ATTACK_DUE_DAY = 15
 const gap = (a: number, b: number) => Math.max(0, a - b)
 
 export default function Month() {
-  const { loading, error, transactions, budgetLines, plan, accounts, refresh } = useData()
+  // `transactions` is the HOUSEHOLD's — the data layer has already removed
+  // anything on a business account, so every total on this page is household
+  // money by construction rather than by each sum remembering to exclude it.
+  const { loading, error, transactions, allTransactions, budgetLines, plan, accounts, refresh } =
+    useData()
   const totals = useMonthTotals()
 
   /**
@@ -201,6 +205,8 @@ export default function Month() {
   // The planned monthly outlay income has to cover.
   const plannedOutlay = fixedTarget + optionalTarget + attackTarget + savingsTarget
   const hasTransactions = transactions.length > 0
+  /** How much of the month's activity the budget deliberately ignores. */
+  const businessExcluded = allTransactions.length - transactions.length
   const monthComplete = daysLeft === 0
 
   /**
@@ -244,6 +250,11 @@ export default function Month() {
       </div>
       <div className="tiny muted" style={{ marginBottom: 14 }}>
         Tap a bucket to see what is in it, then a transaction to relabel it.
+        {/* Said plainly, because a figure that quietly disagrees with the bank
+            reads as a fault. The rows are still on Activity, behind its own
+            show-business control. */}
+        {businessExcluded > 0 &&
+          ` ${businessExcluded} business ${businessExcluded === 1 ? 'transaction is' : 'transactions are'} not counted here.`}
       </div>
 
       {/* Optional */}

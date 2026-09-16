@@ -186,6 +186,16 @@ export default function Accounts() {
   const instMask = (a: Account) =>
     [a.institution, a.mask ? `\u2022\u2022${a.mask}` : ''].filter(Boolean).join(' ') || null
 
+  /**
+   * Says so when an account's money is the business's.
+   *
+   * The balance and history are tracked exactly like any other account, but none
+   * of its spending reaches a budget bucket and none of its income counts as
+   * household income. An exclusion nobody can see is indistinguishable from a
+   * bug, so it is stated on the account itself rather than left to be inferred.
+   */
+  const businessNote = (a: Account) => (a.is_business ? 'business \u2014 outside the budget' : null)
+
   /** "12.34% · min $100 · owner" — "payment plan" stands in where there is no rate. */
   /**
    * The owner now leads the account name, so it is not repeated here. The type
@@ -196,7 +206,7 @@ export default function Accounts() {
    * cards from one issuer sharing a nickname), the bank's own last four is.
    */
   function syncedSub(a: Account) {
-    const parts = [a.type_label, instMask(a)]
+    const parts = [a.type_label, instMask(a), businessNote(a)]
     if (a.kind === 'card' || a.kind === 'loan' || a.kind === 'tax') {
       parts.push(rateLabel(a), `min ${minimum(a.minimum_payment)}`, dueLabel(a.next_due_on) ?? '')
     }
@@ -205,7 +215,7 @@ export default function Accounts() {
 
   /** "12.34% · updated 3 days ago" — savings shows its deposit target instead of a rate. */
   function manualSub(a: Account) {
-    const parts: (string | null)[] = [a.type_label, instMask(a)]
+    const parts: (string | null)[] = [a.type_label, instMask(a), businessNote(a)]
     if (a.kind === 'savings') {
       if (plan) parts.push(`target ${money(plan.deposit_target)}`)
     } else if (a.kind !== 'checking') {

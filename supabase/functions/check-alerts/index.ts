@@ -189,8 +189,23 @@ Deno.serve(async (req: Request) => {
   const accounts = accountsRes.data
   const balances = balancesRes.data
   const plan = planRes.data
-  const txns = txnsRes.data
   const lines = linesRes.data
+
+  /**
+   * HOUSEHOLD transactions only.
+   *
+   * A business account's spending is tracked and charted but is not household
+   * money, so it belongs in no budget bucket. Every alert below that measures
+   * spending against a target reads this, not the raw rows — otherwise
+   * `optional_80` warns that the household is near its discretionary limit on
+   * money the budget does not count and the /month page does not show.
+   *
+   * Mirrors the client: src/lib/data.tsx narrows `transactions` the same way.
+   */
+  const businessAccountIds = new Set(
+    (accounts ?? []).filter((a) => a.is_business).map((a) => a.id as string),
+  )
+  const txns = (txnsRes.data ?? []).filter((t) => !businessAccountIds.has(t.account_id as string))
 
   const balanceBy = new Map((balances ?? []).map((b) => [b.account_id as string, b]))
   const debts = (accounts ?? []).filter(

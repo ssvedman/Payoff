@@ -48,6 +48,24 @@ export function isCleared(a: Pick<Account, 'balance' | 'cleared_at'>): boolean {
   return a.balance <= 0 || a.cleared_at !== null
 }
 
+/**
+ * Is this row the business's money?
+ *
+ * There is no per-transaction flag and there should not be one: whose money a
+ * charge is follows from the account it was made on, and a person re-labelling
+ * a bucket must not be able to make a business charge personal by accident.
+ *
+ * Business rows are kept, synced, charted and counted toward balances — they are
+ * simply not household spending, so they stay out of every budget bucket and out
+ * of household income.
+ */
+export function isBusinessTxn(
+  t: Pick<Transaction, 'account_id'>,
+  businessAccountIds: Set<string>,
+): boolean {
+  return businessAccountIds.has(t.account_id)
+}
+
 export interface PlanSettings {
   attack_fund: number
   monthly_savings: number
@@ -73,7 +91,19 @@ interface DataState {
   savings: Account | null
   /** Checking accounts — spending sources, never part of the payoff queue. */
   checking: Account[]
+  /**
+   * This month's HOUSEHOLD transactions. Business is already excluded, so no
+   * consumer has to remember to exclude it — a total computed from this is
+   * right by default, and the one screen that wants everything asks for it.
+   */
   transactions: Transaction[]
+  /** This month's transactions including the business's. The ledger view only. */
+  allTransactions: Transaction[]
+  /**
+   * Accounts whose money belongs to the business. Their balances and history are
+   * tracked exactly like any other account; only the budget ignores them.
+   */
+  businessAccountIds: Set<string>
   budgetLines: BudgetLine[]
   plan: PlanSettings | null
   rules: MerchantRuleRow[]
@@ -122,7 +152,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
     debts: [],
     savings: null,
     checking: [],
+    businessAccountIds: new Set<string>(),
     transactions: [],
+    allTransactions: [],
     budgetLines: [],
     plan: null,
     rules: [],
@@ -226,6 +258,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
       .sort()
       .pop() as string | null
 
+    const businessAccountIds = new Set(accounts.filter((a) => a.is_business).map((a) => a.id))
+
+    const allTransactions = (txnRes.data ?? []).map((t: Record<string, unknown>) => ({
+      ...(t as unknown as TransactionRow),
+      amount: num(t.amount),
+    }))
+
     setState({
       loading: false,
       error: null,
@@ -233,10 +272,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
       debts,
       savings: accounts.find((a) => a.kind === 'savings') ?? null,
       checking: accounts.filter((a) => a.kind === 'checking'),
-      transactions: (txnRes.data ?? []).map((t: Record<string, unknown>) => ({
-        ...(t as unknown as TransactionRow),
-        amount: num(t.amount),
-      })),
+      businessAccountIds,
+      allTransactions,
+      transactions: allTransactions.filter((t) => !isBusinessTxn(t, businessAccountIds)),
       budgetLines: (budgetRes.data ?? []).map((b: Record<string, unknown>) => ({
         ...(b as unknown as BudgetLineRow),
         monthly_target: num(b.monthly_target),
@@ -369,7 +407,13 @@ export function usePayoffPlan() {
   }, [debts, plan, savings, progress])
 }
 
-/** Spend per bucket for the current month. Money out is positive. */
+/**
+ * Spend per bucket for the current month. Money out is positive.
+ *
+ * Reads `transactions`, which the provider has already narrowed to the
+ * household — so business spending never lands in a bucket and money the
+ * business takes in is never reported as household income.
+ */
 export function useMonthTotals() {
   const { transactions, budgetLines } = useData()
 

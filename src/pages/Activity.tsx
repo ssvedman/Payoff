@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase'
 import Recategorizer, { bucketStyle, type MoveNotice } from '../components/Recategorizer'
 import MoveNoticeBar from '../components/MoveNoticeBar'
 import GroupedActivity, { GROUPINGS, type GroupBy } from '../components/GroupedActivity'
-import { useData, type Transaction } from '../lib/data'
+import { useData, isBusinessTxn, type Transaction } from '../lib/data'
 import { accountDescriptor, dayHeading, isoDate, signedMoney, MONTH_NAMES } from '../lib/format'
 
 type Filter = 'all' | 'review' | 'optional'
@@ -15,7 +15,30 @@ const FILTERS: { key: Filter; label: string }[] = [
 ]
 
 export default function Activity() {
-  const { loading, error, accounts, transactions: currentMonthTxns, refresh } = useData()
+  const {
+    loading,
+    error,
+    accounts,
+    allTransactions: currentMonthTxns,
+    businessAccountIds,
+    refresh,
+  } = useData()
+
+  /**
+   * Whether the business's own spending is in the list.
+   *
+   * Activity is the ledger, and the ledger holds everything the banks reported —
+   * business rows included, because they are still tracked, still charted and
+   * still count toward a balance. What they are NOT is household spending: the
+   * budget on /month excludes them entirely.
+   *
+   * So this page reads from `allTransactions`, not the household-narrowed
+   * `transactions`, and hides the business rows by default so that what is
+   * listed and what is budgeted agree. The control below says so out loud, with
+   * a count, because a silently shorter list is indistinguishable from missing
+   * data — the same failure this app has already been bitten by.
+   */
+  const [showBusiness, setShowBusiness] = useState(false)
 
   /**
    * Which month is on screen. The shared data layer loads the current month only,
@@ -213,8 +236,22 @@ export default function Activity() {
         : filter === 'all'
           ? transactions
           : transactions.filter((t) => t.bucket === filter)
-    return [...rows].sort((a, b) => (a.posted_on < b.posted_on ? 1 : a.posted_on > b.posted_on ? -1 : 0))
-  }, [transactions, filter, reviewRows])
+    const kept = showBusiness
+      ? rows
+      : rows.filter((t) => !isBusinessTxn(t, businessAccountIds))
+    return [...kept].sort((a, b) => (a.posted_on < b.posted_on ? 1 : a.posted_on > b.posted_on ? -1 : 0))
+  }, [transactions, filter, reviewRows, showBusiness, businessAccountIds])
+
+  /** How many the toggle is holding back, so the control can say it. */
+  const businessHidden = useMemo(() => {
+    const rows =
+      filter === 'review'
+        ? (reviewRows ?? [])
+        : filter === 'all'
+          ? transactions
+          : transactions.filter((t) => t.bucket === filter)
+    return rows.filter((t) => isBusinessTxn(t, businessAccountIds)).length
+  }, [transactions, filter, reviewRows, businessAccountIds])
 
   const days = useMemo(() => {
     const groups: { date: string; rows: Transaction[] }[] = []
@@ -328,6 +365,45 @@ export default function Activity() {
           )
         })}
       </div>
+
+      {/* The business's own money.
+          Present whenever a business account exists — NOT only when the month on
+          screen happens to contain one of its rows. Tying it to the current view
+          meant the control vanished in a quiet month, which is exactly how a
+          feature becomes undiscoverable: absent and missing look identical. */}
+      {businessAccountIds.size > 0 && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            marginBottom: 16,
+            paddingBottom: 12,
+            borderBottom: '1px solid var(--line)',
+          }}
+        >
+          <button
+            type="button"
+            className="pill"
+            aria-pressed={showBusiness}
+            onClick={() => setShowBusiness((v) => !v)}
+            style={
+              showBusiness
+                ? { background: 'var(--ink)', color: '#fff' }
+                : { background: 'var(--white)', color: 'var(--steel)', border: '1px solid var(--line)' }
+            }
+          >
+            {showBusiness ? 'Hide business' : 'Show business'}
+          </button>
+          <span className="tiny muted" style={{ lineHeight: 1.4 }}>
+            {showBusiness
+              ? 'Business rows are listed. They are still excluded from the budget.'
+              : businessHidden === 0
+                ? 'No business rows here. They are always excluded from the budget.'
+                : `${businessHidden} business ${businessHidden === 1 ? 'row is' : 'rows are'} hidden.`}
+          </span>
+        </div>
+      )}
 
       {error && (
         <div className="banner banner--red sm" style={{ marginBottom: 14, fontWeight: 600 }}>
