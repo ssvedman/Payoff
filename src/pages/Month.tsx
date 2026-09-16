@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import Bar from '../components/Bar'
 import { useData, useMonthTotals, type Transaction } from '../lib/data'
-import { money, moneyCents, MONTH_NAMES, accountLabel, dayHeading } from '../lib/format'
+import { money, moneyCents, MONTH_NAMES, accountDescriptor, dayHeading } from '../lib/format'
 import Recategorizer, { type MoveNotice } from '../components/Recategorizer'
 import MoveNoticeBar from '../components/MoveNoticeBar'
 
@@ -45,7 +45,7 @@ export default function Month() {
   const [openBucket, setOpenBucket] = useState<string | null>(null)
 
   const nameOf = useMemo(() => {
-    const byId = new Map(accounts.map((a) => [a.id, accountLabel(a)]))
+    const byId = new Map(accounts.map((a) => [a.id, accountDescriptor(a)]))
     return (id: string) => byId.get(id) ?? 'Unlinked account'
   }, [accounts])
 

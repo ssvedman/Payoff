@@ -55,6 +55,9 @@ interface AccountRow {
   cleared_at: string | null
   is_business: boolean
   payoff_order: number
+  institution: string | null
+  /** The institution's own last four. Display only. */
+  mask: string | null
   /** Statement descriptors that stand in for this account's name. */
   payment_aliases: string[] | null
 }
@@ -206,6 +209,19 @@ Deno.serve(async (req: Request) => {
   const savingsNames = accounts.filter((a) => a.kind === 'savings').flatMap(namesOf)
 
   /**
+   * Institutions whose own feed we hold, so the categorizer can tell a bank's
+   * funding leg from the purchase it funds. Connected accounts only — a manual
+   * account has no feed and therefore mirrors nothing.
+   */
+  const heldInstitutions = [
+    ...new Set(
+      accounts
+        .filter((a) => a.plaid_account_id && a.institution)
+        .map((a) => String(a.institution).trim().toLowerCase()),
+    ),
+  ]
+
+  /**
    * The current target: lowest payoff_order still owing.
    *
    * Deliberately NOT computed yet. Deriving it here would read the balances left
@@ -283,6 +299,15 @@ Deno.serve(async (req: Request) => {
       for (const pa of plaidAccounts as PlaidAccount[]) {
         const acct = byPlaidId.get(pa.account_id)
         if (!acct || acct.is_manual) continue
+
+        // The bank's own last four, kept current so a transaction can name an
+        // account a person can actually find. Two cards here share one nickname
+        // and a checking account is a bare word; the friendly name alone
+        // identifies neither. Display only — never a full number.
+        if (pa.mask && pa.mask !== acct.mask) {
+          await admin.from('accounts').update({ mask: pa.mask }).eq('id', acct.id)
+          acct.mask = pa.mask
+        }
 
         const current = pa.balances.current
         if (current === null || current === undefined) continue
@@ -458,6 +483,8 @@ Deno.serve(async (req: Request) => {
             plaidCategory: detailed,
             amount: t.amount,
             accountKind: acct.kind,
+            accountNames: namesOf(acct),
+            heldInstitutions,
             targetNames,
             debtNames,
             savingsNames,

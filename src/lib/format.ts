@@ -52,6 +52,54 @@ export const ownerLabel = (owner: string) =>
 export const accountLabel = (a: { name: string; owner: string }) =>
   `${ownerLabel(a.owner)} \u00B7 ${a.name}`
 
+/** What an account is called at the bank, as distinct from what it is called here. */
+export interface AccountIdentity {
+  name: string
+  owner: string
+  kind?: string | null
+  institution?: string | null
+  mask?: string | null
+}
+
+const KIND_WORD: Record<string, string> = {
+  checking: 'checking',
+  savings: 'savings',
+  card: 'card',
+  loan: 'loan',
+  tax: 'tax plan',
+}
+
+/**
+ * The same account, said well enough to go and find it.
+ *
+ * `accountLabel` gives the nickname the household filed it under, which is fine
+ * beside a balance on the accounts list but useless under a transaction: two
+ * cards here carry the SAME nickname, and another is a bare word naming neither
+ * a bank nor a kind of account. This adds the institution, what sort of account
+ * it is, and the bank's own last four — "Alex · Rewards · Northbank card ••4417".
+ *
+ * Each part is dropped when it would only repeat: an account already nicknamed
+ * "Northbank checking" does not become "Northbank checking · Northbank
+ * checking". The mask is the one part always worth keeping, because it is the
+ * only piece guaranteed unique and it is what the bank prints.
+ */
+export function accountDescriptor(a: AccountIdentity): string {
+  const parts = [ownerLabel(a.owner), a.name]
+
+  const inst = (a.institution ?? '').trim()
+  const kindWord = KIND_WORD[(a.kind ?? '').toLowerCase()] ?? ''
+  const lowerName = a.name.toLowerCase()
+
+  const wantInst = inst.length > 0 && !lowerName.includes(inst.toLowerCase())
+  const wantKind = kindWord.length > 0 && !lowerName.includes(kindWord)
+
+  const where = [wantInst ? inst : '', wantKind ? kindWord : ''].filter(Boolean).join(' ')
+  const tail = [where, a.mask ? `\u2022\u2022${a.mask}` : ''].filter(Boolean).join(' ')
+  if (tail) parts.push(tail)
+
+  return parts.join(' \u00B7 ')
+}
+
 /** "3 days ago", "4h ago", "just now" — for last-synced and last-saved lines. */
 export function relativeTime(iso: string | null | undefined, now = new Date()): string {
   if (!iso) return 'never'

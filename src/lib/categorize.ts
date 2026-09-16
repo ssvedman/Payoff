@@ -6,11 +6,13 @@
  * the precedence chain in one place, change it in the other.
  *
  *   1. Manual override on that transaction — never recomputed
- *   2. Merchant rule — match_text found in lowercased name or merchant_name
- *   3. Account-based — a payment to the target account is attack, a minimum to any
+ *   2. Funding leg — a bank row that only funds a purchase another connected
+ *      feed already records at merchant level
+ *   3. Merchant rule — match_text found in lowercased name or merchant_name
+ *   4. Account-based — a payment to the target account is attack, a minimum to any
  *      other debt is fixed, a transfer to savings is savings, a deposit is income
- *   4. Plaid category map
- *   5. Fallback — review
+ *   5. Plaid category map
+ *   6. Fallback — review
  */
 
 import type { Bucket } from './database.types'
@@ -88,6 +90,42 @@ export function bucketFromPlaidCategory(detailed: string | null | undefined): Bu
   }
 }
 
+/**
+ * Payment processors whose OWN feed we may also hold.
+ *
+ * A purchase routed through one of these lands twice: once on the processor's
+ * account, naming the real merchant, and once on the bank account that funded
+ * it, naming the processor. Both are true records of the same money, and
+ * counting both inflated this household's spending — a $19.28 subscription was
+ * counted at $38.56 every month for five months, and a $99.99 one at $199.97.
+ *
+ * `funding` must match ONLY the purchase-funding descriptor. A top-up moving
+ * money into the processor's balance, and a repayment of the processor's credit
+ * card, are different events that are NOT mirrored as purchases — matching them
+ * here would erase real spending. For PayPal that means requiring the word
+ * "purchase"/"payment" or the `PP*`/`PAYPAL *` prefix, and never firing on
+ * "PAYPAL INST XFER".
+ */
+const PROCESSORS: { institution: string; funding: RegExp }[] = [
+  { institution: 'paypal', funding: /\bpaypal\b[^a-z]{0,3}(purchase|payment)\b|(^|[\s*])pp\*|\bpaypal\s*\*/ },
+]
+
+/**
+ * Is this bank row merely the funding leg of a purchase another feed records?
+ *
+ * Only true when that other feed is actually connected — `heldInstitutions` is
+ * the guard. Disconnect PayPal and this stops firing, so the bank row becomes
+ * the only record again and counts, rather than the spending silently vanishing.
+ */
+export function fundingLegFor(haystack: string, heldInstitutions: string[]): string | null {
+  const held = heldInstitutions.map((i) => i.trim().toLowerCase())
+  for (const p of PROCESSORS) {
+    if (!held.includes(p.institution)) continue
+    if (p.funding.test(haystack)) return p.institution
+  }
+  return null
+}
+
 export interface RuleLike {
   match_text: string
   bucket: string
@@ -145,6 +183,18 @@ export interface CategorizeArgs {
   /** The kind of the account this transaction sits on. */
   accountKind: string
   /**
+   * Names and aliases of the account this row sits ON. Needed because some
+   * issuers report a payment to a card from the PAYER's side — a positive amount
+   * on the card itself — and that row is the mirror of the bank's outflow, not a
+   * second obligation.
+   */
+  accountNames?: string[]
+  /**
+   * Lowercase institutions we hold a connected account for. Enables the
+   * funding-leg step; empty disables it.
+   */
+  heldInstitutions?: string[]
+  /**
    * The account currently being attacked — lowest payoff_order still owing —
    * as its name plus any payment_aliases. Only payments to THIS account count
    * toward the attack fund. It is a list because a bank's statement descriptor
@@ -166,12 +216,24 @@ export function categorize(a: CategorizeArgs): { bucket: Bucket; source: 'auto' 
     return { bucket: a.existingBucket, source: 'manual' }
   }
 
-  // 2. Merchant rule.
+  const haystack = `${a.name ?? ''} ${a.merchantName ?? ''}`.toLowerCase()
+
+  // 2. Funding leg — BEFORE merchant rules, and deliberately so.
+  //
+  // A rule says "charges from this merchant are optional". It does not say
+  // "count this merchant twice". Ruling the processor feed's Discord row to
+  // optional also caught the bank's "PAYPAL PURCHASE DISCORD" leg, so the more
+  // carefully the household labelled its spending, the more it double-counted.
+  // Only a manual override on this exact row outranks this.
+  if (a.amount > 0 && fundingLegFor(haystack, a.heldInstitutions ?? [])) {
+    return { bucket: 'transfer', source: 'auto' }
+  }
+
+  // 3. Merchant rule.
   const rule = matchRule(a.name, a.merchantName, a.rules)
   if (rule) return { bucket: rule.bucket as Bucket, source: 'rule' }
 
-  // 3. Account-based.
-  const haystack = `${a.name ?? ''} ${a.merchantName ?? ''}`.toLowerCase()
+  // 4. Account-based.
   const isDebtAccount = a.accountKind === 'card' || a.accountKind === 'loan' || a.accountKind === 'tax'
 
   if (isDebtAccount) {
@@ -181,6 +243,22 @@ export function categorize(a: CategorizeArgs): { bucket: Bucket; source: 'auto' 
     // fall through to the category map keeps a returned purchase in the bucket the
     // purchase was in, so the refund cancels it out instead of vanishing.
     if (a.amount < 0 && looksLikePayment(haystack, a.plaidCategory)) {
+      return { bucket: 'transfer', source: 'auto' }
+    }
+
+    // The same mirror, reported with the opposite sign.
+    //
+    // Money in is the usual shape, but one issuer here reports a payment to its
+    // own card as a POSITIVE row on that card, categorized as a credit-card
+    // payment and naming the card itself. Read as a charge, thirteen of those
+    // were counted as fixed spending that never left any checking account. The
+    // descriptor must name THIS account — a payment from this card to a
+    // different debt names the other one and is a genuine outflow.
+    if (
+      a.amount > 0 &&
+      primaryOf(a.plaidCategory) === 'LOAN_PAYMENTS' &&
+      (a.accountNames ?? []).some((n) => namesAccount(haystack, n))
+    ) {
       return { bucket: 'transfer', source: 'auto' }
     }
   } else if (a.amount > 0) {
@@ -222,11 +300,11 @@ export function categorize(a: CategorizeArgs): { bucket: Bucket; source: 'auto' 
     return { bucket: 'income', source: 'auto' }
   }
 
-  // 4. Plaid category map.
+  // 5. Plaid category map.
   const mapped = bucketFromPlaidCategory(a.plaidCategory)
   if (mapped) return { bucket: mapped, source: 'auto' }
 
-  // 5. Fallback.
+  // 6. Fallback.
   return { bucket: 'review', source: 'auto' }
 }
 

@@ -4,7 +4,7 @@ import Recategorizer, { bucketStyle, type MoveNotice } from '../components/Recat
 import MoveNoticeBar from '../components/MoveNoticeBar'
 import GroupedActivity, { GROUPINGS, type GroupBy } from '../components/GroupedActivity'
 import { useData, type Transaction } from '../lib/data'
-import { accountLabel, dayHeading, isoDate, signedMoney, MONTH_NAMES } from '../lib/format'
+import { accountDescriptor, dayHeading, isoDate, signedMoney, MONTH_NAMES } from '../lib/format'
 
 type Filter = 'all' | 'review' | 'optional'
 
@@ -198,7 +198,7 @@ export default function Activity() {
 
   const accountName = useMemo(() => {
     // Owner-first, matching the queue and the accounts list.
-    const byId = new Map(accounts.map((a) => [a.id, accountLabel(a)]))
+    const byId = new Map(accounts.map((a) => [a.id, accountDescriptor(a)]))
     return (id: string) => byId.get(id) ?? 'Unlinked account'
   }, [accounts])
 
