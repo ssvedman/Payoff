@@ -149,6 +149,44 @@ export default function Activity() {
   const { user } = useAuth()
 
   const [filter, setFilter] = useState<Filter>('all')
+
+  /**
+   * Needs review is a QUEUE, not a view of a month.
+   *
+   * It was filtered by the month on screen like everything else, so a row that
+   * arrived in a month nobody happened to be looking at simply never appeared —
+   * and the queue read as empty while items sat in it. Connecting a bank that
+   * hands over two years of history made that acute: everything older than the
+   * current month was invisible the moment it landed.
+   *
+   * So this filter reads across all time. The month control does not apply to
+   * it and is hidden while it is on.
+   */
+  const [reviewRows, setReviewRows] = useState<Transaction[] | null>(null)
+  const [reviewErr, setReviewErr] = useState<string | null>(null)
+
+  const loadReview = useCallback(async () => {
+    const { data, error: qErr } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('bucket', 'review')
+      .order('posted_on', { ascending: false })
+
+    if (qErr) {
+      setReviewErr(qErr.message)
+      setReviewRows([])
+      return
+    }
+    setReviewErr(null)
+    setReviewRows(
+      (data ?? []).map((t) => ({ ...(t as unknown as Transaction), amount: Number(t.amount) })),
+    )
+  }, [])
+
+  useEffect(() => {
+    if (filter !== 'review') return
+    void loadReview()
+  }, [filter, loadReview])
   const [openId, setOpenId] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -160,9 +198,14 @@ export default function Activity() {
   }, [accounts])
 
   const visible = useMemo(() => {
-    const rows = filter === 'all' ? transactions : transactions.filter((t) => t.bucket === filter)
+    const rows =
+      filter === 'review'
+        ? (reviewRows ?? [])
+        : filter === 'all'
+          ? transactions
+          : transactions.filter((t) => t.bucket === filter)
     return [...rows].sort((a, b) => (a.posted_on < b.posted_on ? 1 : a.posted_on > b.posted_on ? -1 : 0))
-  }, [transactions, filter])
+  }, [transactions, filter, reviewRows])
 
   const days = useMemo(() => {
     const groups: { date: string; rows: Transaction[] }[] = []
@@ -250,9 +293,13 @@ export default function Activity() {
         if (bulkError) throw bulkError
       }
 
-      // d. Re-read whichever month is on screen.
+      // d. Re-read whichever month is on screen — and the review queue too, if
+      // that is what is being worked through. Without this a row kept its place
+      // in the queue after being categorised, so the list never got shorter and
+      // there was no way to tell what was left.
       await refresh()
       await loadMonth()
+      if (filter === 'review') await loadReview()
       setOpenId(null)
     } catch (e) {
       console.error('Recategorization failed', e)
@@ -272,7 +319,12 @@ export default function Activity() {
       {/* Month switcher. Forward is disabled at the current month — there is
           nothing recorded ahead of today, and an empty future month reads as a
           fault rather than as the calendar. Back is disabled at the oldest month
-          on record, for the same reason in the other direction. */}
+          on record, for the same reason in the other direction.
+
+          Hidden entirely while the review queue is on: that filter reads across
+          all time, so a month control would sit there implying it narrowed
+          something and quietly contradicting what is on screen. */}
+      {filter !== 'review' && (
       <div
         style={{
           display: 'flex',
@@ -307,6 +359,7 @@ export default function Activity() {
           ›
         </button>
       </div>
+      )}
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
         {FILTERS.map((f) => {
@@ -373,11 +426,15 @@ export default function Activity() {
         // message above already states that, and claiming an empty month would be wrong.
         error ? null : (
           <div className="sm muted" style={{ textAlign: 'center', padding: '34px 0' }}>
-            {filter === 'all'
-              ? monthError
-                ? `${MONTH_NAMES[anchor.getMonth()]} could not be loaded — ${monthError}`
-                : `No transactions in ${MONTH_NAMES[anchor.getMonth()]}.`
-              : 'Nothing in this filter.'}
+            {filter === 'review'
+              ? reviewErr
+                ? `The review queue could not be loaded — ${reviewErr}`
+                : 'Nothing needs review.'
+              : filter === 'all'
+                ? monthError
+                  ? `${MONTH_NAMES[anchor.getMonth()]} could not be loaded — ${monthError}`
+                  : `No transactions in ${MONTH_NAMES[anchor.getMonth()]}.`
+                : 'Nothing in this filter.'}
           </div>
         )
       ) : (
