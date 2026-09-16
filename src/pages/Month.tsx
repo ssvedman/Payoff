@@ -86,13 +86,14 @@ export default function Month() {
    * someone corrects one in /activity. Optional spend with no line yet collects in
    * the catch-all, so the lines always sum to the bucket.
    */
-  const optionalLines = useMemo(() => {
-    const lines = budgetLines.filter((l) => l.bucket === 'optional')
+  const linesIn = useMemo(() => {
+    const build = (bucket: 'optional' | 'fixed') => {
+    const lines = budgetLines.filter((l) => l.bucket === bucket)
     const spent = new Map<string, number>(lines.map((l) => [l.id, 0]))
     const catchAll = lines.find((l) => l.line_name.trim().toLowerCase() === CATCH_ALL)
 
     for (const t of transactions) {
-      if (t.bucket !== 'optional') continue
+      if (t.bucket !== bucket) continue
       // A transaction now carries its line explicitly. Anything not yet assigned
       // — a merchant no rule covers — collects in the catch-all rather than being
       // dropped, so the lines always sum to the bucket.
@@ -101,12 +102,26 @@ export default function Month() {
       // to less than the bar above them and the comment's promise is broken.
       const lineId =
         t.budget_line_id && spent.has(t.budget_line_id) ? t.budget_line_id : catchAll?.id
+      // FIXED has no catch-all, so an unassigned fixed charge has nowhere to go.
+      // It is counted in `unassigned` below rather than dropped, because a row of
+      // lines that quietly sums to less than the bar above it is worse than one
+      // that admits what it could not place.
       if (!lineId) continue
       spent.set(lineId, (spent.get(lineId) ?? 0) + t.amount)
     }
 
-    return lines.map((l) => ({ ...l, spent: spent.get(l.id) ?? 0 }))
+    const placed = lines.map((l) => ({ ...l, spent: spent.get(l.id) ?? 0 }))
+    const totalPlaced = placed.reduce((sum, l) => sum + l.spent, 0)
+    const bucketTotal = transactions
+      .filter((t) => t.bucket === bucket)
+      .reduce((sum, t) => sum + t.amount, 0)
+
+    return { lines: placed, unassigned: Math.round((bucketTotal - totalPlaced) * 100) / 100 }
+    }
+
+    return { optional: build('optional'), fixed: build('fixed') }
   }, [budgetLines, transactions])
+
 
   // First load only — see the note on Home. A background refetch must not replace
   // figures already on screen with placeholders.
@@ -357,25 +372,18 @@ export default function Month() {
       </div>
 
       <div className="sect">Optional, by line</div>
-      {optionalLines.length === 0 ? (
-        <div className="sm muted">No optional budget lines.</div>
-      ) : (
-        <table>
-          <tbody>
-            {optionalLines.map((l) => (
-              <tr key={l.id}>
-                <td className="sm">{l.line_name}</td>
-                <td className="tnum sm" style={{ textAlign: 'right' }}>
-                  {money(l.spent)}
-                </td>
-                <td className="tnum tiny muted" style={{ textAlign: 'right', width: 54 }}>
-                  of {money(l.monthly_target)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <ByLine group={linesIn.optional} unassignedNote="not assigned to a line" />
+
+      {/*
+        Fixed had no breakdown at all — ten lines and more than seven thousand a
+        month behind a single bar. A grocery budget you cannot see is a grocery
+        budget you cannot keep.
+      */}
+      <div className="sect">Fixed, by line</div>
+      <ByLine
+        group={linesIn.fixed}
+        unassignedNote="not assigned to a line"
+      />
       {!hasTransactions && (
         <div className="tiny muted" style={{ marginTop: 8 }}>
           No transactions recorded this month.
@@ -581,5 +589,52 @@ function BucketHeader({
       </span>
       {right}
     </button>
+  )
+}
+
+/**
+ * One bucket's budget lines against what has gone to each.
+ *
+ * `unassigned` is shown rather than hidden. Optional has a catch-all line so it
+ * is normally zero there, but fixed has none — and a table of lines that sums to
+ * less than the bar above it, with no explanation, is how a category quietly
+ * looks empty while the money is somewhere else entirely.
+ */
+function ByLine({
+  group,
+  unassignedNote,
+}: {
+  group: { lines: { id: string; line_name: string; monthly_target: number; spent: number }[]; unassigned: number }
+  unassignedNote: string
+}) {
+  if (group.lines.length === 0) {
+    return <div className="sm muted">No budget lines here.</div>
+  }
+
+  return (
+    <table>
+      <tbody>
+        {group.lines.map((l) => (
+          <tr key={l.id}>
+            <td className="sm">{l.line_name}</td>
+            <td className="tnum sm" style={{ textAlign: 'right' }}>
+              {money(l.spent)}
+            </td>
+            <td className="tnum tiny muted" style={{ textAlign: 'right', width: 54 }}>
+              of {money(l.monthly_target)}
+            </td>
+          </tr>
+        ))}
+        {Math.abs(group.unassigned) >= 0.01 && (
+          <tr>
+            <td className="sm muted">{unassignedNote}</td>
+            <td className="tnum sm muted" style={{ textAlign: 'right' }}>
+              {money(group.unassigned)}
+            </td>
+            <td />
+          </tr>
+        )}
+      </tbody>
+    </table>
   )
 }
