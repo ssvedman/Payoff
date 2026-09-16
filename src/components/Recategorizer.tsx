@@ -26,6 +26,18 @@ export const BUCKETS: { key: Bucket; label: string; bg: string; tx: string }[] =
 
 export const bucketStyle = (b: Bucket) => BUCKETS.find((x) => x.key === b) ?? BUCKETS[6]
 
+export const bucketLabel = (b: Bucket) => bucketStyle(b).label
+
+/** A finished edit, described well enough for the page to say where it went. */
+export interface MoveNotice {
+  name: string
+  /** Set only when the bucket actually changed — i.e. when it may have left the view. */
+  from: Bucket | null
+  to: Bucket
+  lineName: string | null
+  alsoUpdated: number
+}
+
 export default function Recategorizer({
   transaction,
   loaded,
@@ -34,7 +46,12 @@ export default function Recategorizer({
   transaction: Transaction
   /** Rows already on screen, so a vendor rule corrects them in the same call. */
   loaded: Transaction[]
-  onDone: () => void | Promise<void>
+  /**
+   * `notice` describes the edit. Pages that filter by bucket MUST show it: a row
+   * that no longer matches the open filter vanishes on refresh, and silence
+   * reads as deletion.
+   */
+  onDone: (notice?: MoveNotice) => void | Promise<void>
 }) {
   const { budgetLines } = useData()
   const { user } = useAuth()
@@ -79,7 +96,7 @@ export default function Recategorizer({
     setBusy(true)
     setErr(null)
     try {
-      await recategorize({
+      const result = await recategorize({
         transaction,
         bucket,
         lineId,
@@ -87,7 +104,14 @@ export default function Recategorizer({
         userId: user?.id ?? null,
         loaded,
       })
-      await onDone()
+      const lineId2 = lineId === undefined ? transaction.budget_line_id : lineId
+      await onDone({
+        name: transaction.merchant_name || transaction.name,
+        from: result.from,
+        to: result.to,
+        lineName: budgetLines.find((l) => l.id === lineId2)?.line_name ?? null,
+        alsoUpdated: result.alsoUpdated,
+      })
     } catch (e) {
       console.error('Recategorization failed', e)
       setErr('That label did not save.')

@@ -51,6 +51,23 @@ export interface RecategorizeArgs {
   loaded?: Transaction[]
 }
 
+/**
+ * What the write actually did, so the caller can say so.
+ *
+ * A relabelled row usually leaves the list it was relabelled in — the filter or
+ * the opened bucket no longer matches it. Without a word from here, that is
+ * indistinguishable from the transaction being deleted, which is exactly how it
+ * was read the first time it happened.
+ */
+export interface RecategorizeResult {
+  /** The bucket it was in before, or null when the bucket did not change. */
+  from: Bucket | null
+  to: Bucket
+  ruleWritten: boolean
+  /** Other already-loaded rows the rule corrected. */
+  alsoUpdated: number
+}
+
 export async function recategorize({
   transaction,
   bucket,
@@ -58,9 +75,10 @@ export async function recategorize({
   scope,
   userId,
   loaded = [],
-}: RecategorizeArgs): Promise<void> {
+}: RecategorizeArgs): Promise<RecategorizeResult> {
   const linePatch = lineId === undefined ? {} : { budget_line_id: lineId }
   const key = scope === 'vendor' ? vendorKeyFor(transaction) : ''
+  let alsoUpdated = 0
 
   // 1. The rule, when one was asked for. Checked against the generated Insert
   //    shape — no casts, so a renamed column fails the build rather than the write.
@@ -102,6 +120,14 @@ export async function recategorize({
       const byRule: Partial<TransactionRow> = { bucket, bucket_source: 'rule', ...linePatch }
       const { error } = await supabase.from('transactions').update(byRule).in('id', ids)
       if (error) throw error
+      alsoUpdated = ids.length
     }
+  }
+
+  return {
+    from: transaction.bucket === bucket ? null : transaction.bucket,
+    to: bucket,
+    ruleWritten: key.length > 0,
+    alsoUpdated,
   }
 }

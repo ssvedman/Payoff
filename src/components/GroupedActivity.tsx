@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useData, type Transaction } from '../lib/data'
 import { moneyCents, accountLabel, dayHeading } from '../lib/format'
-import Recategorizer, { bucketStyle } from './Recategorizer'
+import Recategorizer, { bucketStyle, type MoveNotice } from './Recategorizer'
 
 /**
  * Activity rolled up, rather than listed.
@@ -40,7 +40,7 @@ export default function GroupedActivity({
 }: {
   rows: Transaction[]
   groupBy: GroupBy
-  onChanged: () => void | Promise<void>
+  onChanged: (notice?: MoveNotice) => void | Promise<void>
 }) {
   const { accounts, budgetLines } = useData()
   const [openKey, setOpenKey] = useState<string | null>(null)
@@ -186,9 +186,9 @@ export default function GroupedActivity({
                         <Recategorizer
                           transaction={t}
                           loaded={rows}
-                          onDone={async () => {
+                          onDone={async (n) => {
                             setEditing(null)
-                            await onChanged()
+                            await onChanged(n)
                           }}
                         />
                       </div>
