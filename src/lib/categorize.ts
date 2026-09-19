@@ -58,6 +58,9 @@ export function bucketFromPlaidCategory(detailed: string | null | undefined): Bu
   if (d === 'FOOD_AND_DRINK_GROCERIES') return 'fixed'
   if (d === 'TRANSPORTATION_GAS') return 'fixed'
   if (d === 'GENERAL_SERVICES_INSURANCE') return 'fixed'
+  // Pet food is a standing household cost, not a discretionary purchase, so it
+  // sits with groceries rather than with the rest of GENERAL_MERCHANDISE.
+  if (d === 'GENERAL_MERCHANDISE_PET_SUPPLIES') return 'fixed'
 
   switch (primaryOf(d)) {
     case 'INCOME':
