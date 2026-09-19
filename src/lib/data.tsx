@@ -416,7 +416,17 @@ export function usePayoffPlan() {
  */
 export function useMonthTotals() {
   const { transactions, budgetLines } = useData()
+  return useMonthTotalsFor(transactions, budgetLines)
+}
 
+/**
+ * The same totals for any month's rows — /month pages back through earlier
+ * months and totals whichever one is on screen.
+ *
+ * `transactions` must already be narrowed to the household, as both the
+ * provider and useMonthView() narrow theirs.
+ */
+export function useMonthTotalsFor(transactions: Transaction[], budgetLines: BudgetLine[]) {
   return useMemo(() => {
     const spent: Record<string, number> = {}
     for (const t of transactions) {

@@ -1,10 +1,11 @@
-import { Fragment, useEffect, useMemo, useRef, useState, useCallback } from 'react'
+import { Fragment, useEffect, useMemo, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import Recategorizer, { bucketStyle, type MoveNotice } from '../components/Recategorizer'
 import MoveNoticeBar from '../components/MoveNoticeBar'
 import GroupedActivity, { GROUPINGS, type GroupBy } from '../components/GroupedActivity'
 import { useData, isBusinessTxn, type Transaction } from '../lib/data'
-import { accountDescriptor, dayHeading, isoDate, signedMoney, MONTH_NAMES } from '../lib/format'
+import { MonthNav, useMonthView } from '../lib/monthView'
+import { accountDescriptor, dayHeading, signedMoney, MONTH_NAMES } from '../lib/format'
 
 type Filter = 'all' | 'review' | 'optional'
 
@@ -19,9 +20,7 @@ export default function Activity() {
     loading,
     error,
     accounts,
-    allTransactions: currentMonthTxns,
     businessAccountIds,
-    refresh,
   } = useData()
 
   /**
@@ -41,117 +40,15 @@ export default function Activity() {
   const [showBusiness, setShowBusiness] = useState(false)
 
   /**
-   * Which month is on screen. The shared data layer loads the current month only,
-   * because that is what the home and month screens report on — so anything older
-   * is fetched here. Defaults to the month being viewed.
+   * Which month is on screen, and its rows. Shared with /month — see
+   * useMonthView(), which owns the fetch, the floor at the oldest recorded
+   * month and the guard against a slow request painting the wrong month.
    */
-  const [anchor, setAnchor] = useState(() => {
-    const now = new Date()
-    return new Date(now.getFullYear(), now.getMonth(), 1)
-  })
-  const [pastTxns, setPastTxns] = useState<Transaction[] | null>(null)
-  const [loadingMonth, setLoadingMonth] = useState(false)
-
-  /**
-   * The oldest month there is anything to show.
-   *
-   * Plaid only hands over a fixed window at link time, so the record starts where
-   * the first item's window started and nothing exists before it. Paging back into
-   * those months returns "No transactions", which reads as a fault rather than as
-   * the edge of the record. Read it from the data rather than hard-coding a date:
-   * every nightly sync appends, so the floor moves back on its own as older items
-   * are linked, and never forward — rows are only ever deleted on Plaid's explicit
-   * removed[] (a pending charge superseded by its posted twin), never by ageing.
-   */
-  const [earliest, setEarliest] = useState<Date | null>(null)
-
-  useEffect(() => {
-    let active = true
-    void (async () => {
-      const { data } = await supabase
-        .from('transactions')
-        .select('posted_on')
-        .order('posted_on', { ascending: true })
-        .limit(1)
-      if (!active) return
-      const iso = (data ?? [])[0]?.posted_on
-      if (!iso) return
-      const [y, m] = String(iso).split('-').map(Number)
-      setEarliest(new Date(y, m - 1, 1))
-    })()
-    return () => {
-      active = false
-    }
-  }, [])
-
-  const thisMonth = useMemo(() => {
-    const n = new Date()
-    return anchor.getFullYear() === n.getFullYear() && anchor.getMonth() === n.getMonth()
-  }, [anchor])
-
-  /** At the oldest recorded month, so there is nothing further back to show. */
-  const atEarliest = useMemo(
-    () =>
-      earliest !== null &&
-      anchor.getFullYear() === earliest.getFullYear() &&
-      anchor.getMonth() === earliest.getMonth(),
-    [anchor, earliest],
-  )
-
-  const monthBounds = useMemo(() => {
-    const from = isoDate(new Date(anchor.getFullYear(), anchor.getMonth(), 1))
-    const to = isoDate(new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0))
-    return { from, to }
-  }, [anchor])
-
-  const [monthError, setMonthError] = useState<string | null>(null)
-  /** Guards against a slower earlier month landing after a newer one. */
-  const monthSeq = useRef(0)
-
-  const loadMonth = useCallback(async () => {
-    if (thisMonth) {
-      setPastTxns(null)
-      setMonthError(null)
-      return
-    }
-    const seq = ++monthSeq.current
-    setLoadingMonth(true)
-    setMonthError(null)
-
-    const { data, error: qErr } = await supabase
-      .from('transactions')
-      .select('*')
-      .gte('posted_on', monthBounds.from)
-      .lte('posted_on', monthBounds.to)
-      .order('posted_on', { ascending: false })
-
-    // Tapping back through months faster than they load meant an older request
-    // could resolve last and paint the wrong month's rows under the right
-    // month's heading.
-    if (seq !== monthSeq.current) return
-
-    // A failed query used to render as "No transactions in August" — an empty
-    // month and a broken one are not the same statement, and only one of them
-    // is true.
-    if (qErr) {
-      setMonthError(qErr.message)
-      setPastTxns([])
-      setLoadingMonth(false)
-      return
-    }
-
-    setPastTxns(
-      (data ?? []).map((t) => ({ ...(t as unknown as Transaction), amount: Number(t.amount) })),
-    )
-    setLoadingMonth(false)
-  }, [thisMonth, monthBounds])
-
-  useEffect(() => {
-    void loadMonth()
-  }, [loadMonth])
-
-  /** The current month comes from the shared loader; older months from here. */
-  const transactions = thisMonth ? currentMonthTxns : (pastTxns ?? [])
+  const view = useMonthView()
+  const { anchor, thisMonth, error: monthError } = view
+  /** The ledger shows everything the banks reported, business included. */
+  const transactions = view.allTransactions
+  const loadingMonth = !thisMonth && view.loading
 
   const [filter, setFilter] = useState<Filter>('all')
 
@@ -282,40 +179,7 @@ export default function Activity() {
           all time, so a month control would sit there implying it narrowed
           something and quietly contradicting what is on screen. */}
       {filter !== 'review' && (
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          marginBottom: 12,
-          borderBottom: '1px solid var(--line)',
-          paddingBottom: 10,
-        }}
-      >
-        <button
-          type="button"
-          className="btn ghost"
-          style={{ width: 'auto', padding: '6px 12px', fontSize: 13, opacity: atEarliest ? 0.35 : 1 }}
-          aria-label="Previous month"
-          disabled={atEarliest}
-          onClick={() => setAnchor((d) => new Date(d.getFullYear(), d.getMonth() - 1, 1))}
-        >
-          ‹
-        </button>
-        <div className="sm tnum" style={{ fontWeight: 700 }}>
-          {MONTH_NAMES[anchor.getMonth()]} {anchor.getFullYear()}
-        </div>
-        <button
-          type="button"
-          className="btn ghost"
-          style={{ width: 'auto', padding: '6px 12px', fontSize: 13, opacity: thisMonth ? 0.35 : 1 }}
-          aria-label="Next month"
-          disabled={thisMonth}
-          onClick={() => setAnchor((d) => new Date(d.getFullYear(), d.getMonth() + 1, 1))}
-        >
-          ›
-        </button>
-      </div>
+      <MonthNav view={view} bordered />
       )}
 
       <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -465,8 +329,7 @@ export default function Activity() {
           groupBy={groupBy}
           onChanged={async (n) => {
             setNotice(n ?? null)
-            await refresh()
-            await loadMonth()
+            await view.refresh()
             if (filter === 'review') await loadReview()
           }}
         />
@@ -527,8 +390,7 @@ export default function Activity() {
                               onDone={async (n) => {
                                 setOpenId(null)
                                 setNotice(n ?? null)
-                                await refresh()
-                                await loadMonth()
+                                await view.refresh()
                                 if (filter === 'review') await loadReview()
                               }}
                             />

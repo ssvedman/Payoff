@@ -2,7 +2,8 @@ import { useCallback, useMemo, useState } from 'react'
 import Bar from '../components/Bar'
 import SplitBar from '../components/SplitBar'
 import LinePie from '../components/LinePie'
-import { useData, useMonthTotals, type Transaction } from '../lib/data'
+import { MonthNav, useMonthView } from '../lib/monthView'
+import { useData, useMonthTotalsFor, type Transaction } from '../lib/data'
 import { money, moneyCents, MONTH_NAMES, accountDescriptor, dayHeading, ownerLabel } from '../lib/format'
 import Recategorizer, { type MoveNotice } from '../components/Recategorizer'
 import MoveNoticeBar from '../components/MoveNoticeBar'
@@ -36,9 +37,15 @@ export default function Month() {
   // `transactions` is the HOUSEHOLD's — the data layer has already removed
   // anything on a business account, so every total on this page is household
   // money by construction rather than by each sum remembering to exclude it.
-  const { loading, error, transactions, allTransactions, budgetLines, plan, accounts, refresh } =
-    useData()
-  const totals = useMonthTotals()
+  const { error: dataError, budgetLines, plan, accounts } = useData()
+  // The month on screen, which is not always the current one. Its rows are
+  // already narrowed to the household, exactly as the provider narrows this
+  // month's, so every total below is household money by construction.
+  const view = useMonthView()
+  const { transactions, allTransactions, refresh } = view
+  const loading = view.loading
+  const error = dataError ?? view.error
+  const totals = useMonthTotalsFor(transactions, budgetLines)
 
   /**
    * Which bucket is opened up.
@@ -86,8 +93,17 @@ export default function Month() {
   }, [transactions])
 
   const today = new Date()
-  const day = today.getDate()
-  const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate()
+  const anchor = view.anchor
+  const daysInMonth = new Date(anchor.getFullYear(), anchor.getMonth() + 1, 0).getDate()
+  /**
+   * How far through the month on screen we are.
+   *
+   * A month that has already ended is finished, not part-way through: pace is
+   * the whole target, nothing is "remaining", and a shortfall is a fact rather
+   * than a month still running. Reading today's date for an earlier month would
+   * judge all of August against 19/31 of its budget.
+   */
+  const day = view.thisMonth ? today.getDate() : daysInMonth
   const daysLeft = daysInMonth - day
   // daysInMonth is 28–31, so this never divides by zero and is always > 0.
   const elapsed = day / daysInMonth
@@ -199,9 +215,9 @@ export default function Month() {
     return (
       <div className="page">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
-          <span style={{ fontWeight: 700, fontSize: 20 }}>{MONTH_NAMES[today.getMonth()]}</span>
+          <span style={{ fontWeight: 700, fontSize: 20 }}>{MONTH_NAMES[anchor.getMonth()]}</span>
           <span className="tnum tiny muted">
-            day {day} of {daysInMonth}
+            {view.thisMonth ? `day ${day} of ${daysInMonth}` : anchor.getFullYear()}
           </span>
         </div>
         <div className="sm muted">This month could not be loaded. {error}</div>
@@ -259,11 +275,13 @@ export default function Month() {
   return (
     <div className="page">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
-        <span style={{ fontWeight: 700, fontSize: 20 }}>{MONTH_NAMES[today.getMonth()]}</span>
+        <span style={{ fontWeight: 700, fontSize: 20 }}>{MONTH_NAMES[anchor.getMonth()]}</span>
         <span className="tnum tiny muted">
-          day {day} of {daysInMonth}
+          {view.thisMonth ? `day ${day} of ${daysInMonth}` : anchor.getFullYear()}
         </span>
       </div>
+
+      <MonthNav view={view} />
 
       <div className="tnum sm muted" style={{ marginBottom: 20 }}>
         {income > 0 ? `${money(spentTotal)} spent of ${money(income)} in` : `${money(spentTotal)} spent`}
@@ -313,8 +331,8 @@ export default function Month() {
             )}
         <div className="tnum tiny muted" style={{ marginTop: 4 }}>
           {overTarget
-            ? `${money(optionalSpent - optionalTarget)} over, ${daysLeft} days remaining`
-            : `${money(optionalTarget - optionalSpent)} left, ${daysLeft} days remaining`}
+            ? `${money(optionalSpent - optionalTarget)} over${view.thisMonth ? `, ${daysLeft} days remaining` : ''}`
+            : `${money(optionalTarget - optionalSpent)} ${view.thisMonth ? `left, ${daysLeft} days remaining` : 'under'}`}
         </div>
           </>
         )}
