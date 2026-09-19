@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import Bar from '../components/Bar'
 import SplitBar from '../components/SplitBar'
+import LineBars from '../components/LineBars'
 import { useData, useMonthTotals, type Transaction } from '../lib/data'
 import { money, moneyCents, MONTH_NAMES, accountDescriptor, dayHeading, ownerLabel } from '../lib/format'
 import Recategorizer, { type MoveNotice } from '../components/Recategorizer'
@@ -422,7 +423,11 @@ export default function Month() {
       </div>
 
       <div className="sect">Optional, by line</div>
-      <ByLine group={linesIn.optional} unassignedNote="not assigned to a line" />
+      <LineBars
+        lines={linesIn.optional.lines}
+        unassigned={linesIn.optional.unassigned}
+        unassignedNote="not assigned to a line"
+      />
 
       {/*
         Fixed had no breakdown at all — ten lines and more than seven thousand a
