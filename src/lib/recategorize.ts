@@ -1,5 +1,5 @@
 import { supabase } from './supabase'
-import { ruleTextFor } from './categorize'
+import { ruleApplies, ruleTextFor } from './categorize'
 import type { Bucket, MerchantRuleRow, TransactionRow } from './database.types'
 import type { Transaction } from './data'
 
@@ -32,6 +32,9 @@ export function vendorKeyFor(t: { name: string; merchant_name?: string | null })
 
 export function matchesVendorKey(t: Transaction, key: string): boolean {
   if (!key) return false
+  // The same limit the sync applies: a transfer arriving is not a purchase, so
+  // relabelling a merchant must not sweep it into that merchant's bucket.
+  if (!ruleApplies(t.amount, t.plaid_category)) return false
   return `${t.name ?? ''} ${t.merchant_name ?? ''}`.toLowerCase().includes(key)
 }
 

@@ -20,7 +20,7 @@ import {
   PlaidError,
   type PlaidAccount,
 } from './plaid.ts'
-import { categorize, matchRule as matchedRule, type Bucket, type RuleLike } from './categorize.ts'
+import { categorize, matchRule as matchedRule, ruleApplies, type Bucket, type RuleLike } from './categorize.ts'
 
 // SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are injected by the platform.
 // They cannot be set as custom secrets — the name prefix SUPABASE_ is reserved.
@@ -507,7 +507,9 @@ Deno.serve(async (req: Request) => {
 
           // A hand-set line is never recomputed, exactly like a manual bucket.
           // Otherwise a merchant rule decides, then the category map.
-          const ruleLine = matchedRule(t.name, t.merchant_name, rules)?.budget_line_id ?? null
+          const ruleLine = ruleApplies(t.amount, detailed)
+            ? matchedRule(t.name, t.merchant_name, rules)?.budget_line_id ?? null
+            : null
           const budgetLineId =
             prior?.bucket_source === 'manual'
               ? prior.budget_line_id

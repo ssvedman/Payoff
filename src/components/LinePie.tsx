@@ -172,12 +172,17 @@ export default function LinePie({
                 <td style={{ width: 16 }}>
                   <span className="line-pie-swatch" style={{ background: r.color }} />
                 </td>
-                <td className="sm">{r.label}</td>
+                {/* The share sits with the name, not the amount: beside "of $250" it
+                    read as a fraction of the target, when it is the line's slice of
+                    the bucket's total. */}
+                <td className="sm">
+                  {r.label}
+                  <span className="tnum tiny muted"> · {share(r.spent)}</span>
+                </td>
                 <td className="tnum sm" style={{ textAlign: 'right' }}>
                   <span style={over ? { color: 'var(--red)', fontWeight: 700 } : undefined}>
                     {money(r.spent)}
                   </span>
-                  <span className="tiny muted"> {share(r.spent)}</span>
                 </td>
                 <td className="tnum tiny muted" style={{ textAlign: 'right', width: 54 }}>
                   {r.target > 0 ? `of ${money(r.target)}` : ''}

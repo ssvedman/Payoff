@@ -143,6 +143,20 @@ export interface RuleLike {
   budget_line_id?: string | null
 }
 
+/**
+ * Can a merchant rule decide this row at all?
+ *
+ * A rule says what buying from a merchant is. Money ARRIVING that Plaid files
+ * as a transfer is not a purchase from anyone. A "walmart → Groceries" rule
+ * caught a $244 transfer in named "Walmart" and filed it as a negative grocery
+ * charge, so a $230 shop showed as -$13 of groceries. A refund still reaches
+ * rules: Plaid files it under the purchase's own category, not TRANSFER_IN, so
+ * it keeps cancelling the charge it reverses.
+ */
+export function ruleApplies(amount: number, plaidCategory: string | null | undefined): boolean {
+  return !(amount < 0 && primaryOf(plaidCategory) === 'TRANSFER_IN')
+}
+
 export function matchRule(
   name: string,
   merchantName: string | null | undefined,
@@ -277,7 +291,9 @@ export function categorize(a: CategorizeArgs): { bucket: Bucket; source: 'auto' 
   }
 
   // 3. Merchant rule.
-  const rule = matchRule(a.name, a.merchantName, a.rules)
+  const rule = ruleApplies(a.amount, a.plaidCategory)
+    ? matchRule(a.name, a.merchantName, a.rules)
+    : null
   if (rule) return { bucket: rule.bucket as Bucket, source: 'rule' }
 
   // 4. Account-based.
