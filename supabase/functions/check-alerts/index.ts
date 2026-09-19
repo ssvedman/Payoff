@@ -366,6 +366,9 @@ Deno.serve(async (req: Request) => {
   //
   // Only cards that are CONNECTED: judging dormancy needs a transaction feed, and
   // a hand-maintained card has none. Silence there means no data, not no use.
+  //
+  // Business cards included, deliberately: the budget ignores their spending but
+  // an issuer closing one still costs the household its credit limit.
   const DORMANT_DAYS = 180
 
   const { data: lastActivity } = await admin
