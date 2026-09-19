@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import Bar from '../components/Bar'
 import SplitBar from '../components/SplitBar'
-import LineBars from '../components/LineBars'
+import LinePie from '../components/LinePie'
 import { useData, useMonthTotals, type Transaction } from '../lib/data'
 import { money, moneyCents, MONTH_NAMES, accountDescriptor, dayHeading, ownerLabel } from '../lib/format'
 import Recategorizer, { type MoveNotice } from '../components/Recategorizer'
@@ -294,11 +294,6 @@ export default function Month() {
           }
         />
         <Bar pct={optionalTarget > 0 ? optionalSpent / optionalTarget : 0} color={optionalColor} />
-        <div className="tnum tiny muted" style={{ marginTop: 4 }}>
-          {overTarget
-            ? `${money(optionalSpent - optionalTarget)} over, ${daysLeft} days remaining`
-            : `${money(optionalTarget - optionalSpent)} left, ${daysLeft} days remaining`}
-        </div>
         {optionalByOwner.people.length === 2 && (
           <>
             <SplitBar
@@ -316,6 +311,11 @@ export default function Month() {
                 {money(optionalByOwner.joint)} on joint accounts, not split
               </div>
             )}
+        <div className="tnum tiny muted" style={{ marginTop: 4 }}>
+          {overTarget
+            ? `${money(optionalSpent - optionalTarget)} over, ${daysLeft} days remaining`
+            : `${money(optionalTarget - optionalSpent)} left, ${daysLeft} days remaining`}
+        </div>
           </>
         )}
         {openBucket === 'optional' && (
@@ -423,10 +423,10 @@ export default function Month() {
       </div>
 
       <div className="sect">Optional, by line</div>
-      <LineBars
+      <LinePie
         lines={linesIn.optional.lines}
         unassigned={linesIn.optional.unassigned}
-        unassignedNote="not assigned to a line"
+        catchAllName={CATCH_ALL}
       />
 
       {/*

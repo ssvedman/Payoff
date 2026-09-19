@@ -327,30 +327,31 @@ tr:last-child td { border-bottom: none; }
   }
 }
 
-/* Optional, by line — one bar per line on a shared scale; the tick is the line's target. */
-.line-bar {
-  padding: 8px 0 10px;
+/* Optional, by line — the pie with its legend beside it; they stack on a phone. */
+.line-pie {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
 }
 
-.line-bar-track {
-  position: relative;
-  height: 7px;
-  margin-top: 6px;
+.line-pie svg {
+  flex: none;
+  margin: 0 auto;
 }
 
-.line-bar-track > span {
+.line-pie-legend {
+  flex: 1 1 220px;
+  width: auto;
+}
+
+.line-pie-legend td {
+  padding: 7px 0;
+}
+
+.line-pie-swatch {
   display: block;
-  height: 100%;
-  min-width: 2px;
-  border-radius: 0 4px 4px 0;
-  transition: width .3s ease;
-}
-
-.line-bar-track > i {
-  position: absolute;
-  top: -3px;
-  bottom: -3px;
-  width: 2px;
-  margin-left: -1px;
-  background: var(--ink);
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
 }
