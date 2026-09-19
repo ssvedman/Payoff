@@ -135,6 +135,31 @@ body {
   transition: width .3s ease;
 }
 
+/* Two shares of one total. The white tick is the halfway mark the division is read against. */
+.split-bar {
+  position: relative;
+  display: flex;
+  height: 7px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--line);
+}
+
+.split-bar > span {
+  height: 100%;
+  transition: width .3s ease;
+}
+
+.split-bar > i {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--white);
+}
+
 .btn {
   padding: 13px 16px;
   background: var(--ink);

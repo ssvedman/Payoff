@@ -1,7 +1,8 @@
 import { useCallback, useMemo, useState } from 'react'
 import Bar from '../components/Bar'
+import SplitBar from '../components/SplitBar'
 import { useData, useMonthTotals, type Transaction } from '../lib/data'
-import { money, moneyCents, MONTH_NAMES, accountDescriptor, dayHeading } from '../lib/format'
+import { money, moneyCents, MONTH_NAMES, accountDescriptor, dayHeading, ownerLabel } from '../lib/format'
 import Recategorizer, { type MoveNotice } from '../components/Recategorizer'
 import MoveNoticeBar from '../components/MoveNoticeBar'
 
@@ -52,6 +53,24 @@ export default function Month() {
     const byId = new Map(accounts.map((a) => [a.id, accountDescriptor(a)]))
     return (id: string) => byId.get(id) ?? 'Unlinked account'
   }, [accounts])
+
+  /**
+   * Optional spend by whose account it went out of. The two people come from the
+   * accounts themselves rather than from code, so their names never enter the
+   * repository. A joint account belongs to neither side of the split, so its
+   * spend is reported beside the bar instead of being divided by guesswork.
+   */
+  const optionalByOwner = useMemo(() => {
+    const ownerOf = new Map(accounts.map((a) => [a.id, a.owner]))
+    const people = [...new Set(accounts.map((a) => a.owner).filter((o) => o !== 'joint'))].sort()
+    const spent = new Map<string, number>()
+    for (const t of transactions) {
+      if (t.bucket !== 'optional') continue
+      const o = ownerOf.get(t.account_id) ?? 'joint'
+      spent.set(o, (spent.get(o) ?? 0) + t.amount)
+    }
+    return { people, spent, joint: spent.get('joint') ?? 0 }
+  }, [accounts, transactions])
 
   /** Largest first: the rows worth looking at are the ones moving the total. */
   const rowsIn = useMemo(() => {
@@ -279,6 +298,25 @@ export default function Month() {
             ? `${money(optionalSpent - optionalTarget)} over, ${daysLeft} days remaining`
             : `${money(optionalTarget - optionalSpent)} left, ${daysLeft} days remaining`}
         </div>
+        {optionalByOwner.people.length === 2 && (
+          <>
+            <SplitBar
+              left={{
+                label: ownerLabel(optionalByOwner.people[0]),
+                amount: optionalByOwner.spent.get(optionalByOwner.people[0]) ?? 0,
+              }}
+              right={{
+                label: ownerLabel(optionalByOwner.people[1]),
+                amount: optionalByOwner.spent.get(optionalByOwner.people[1]) ?? 0,
+              }}
+            />
+            {Math.abs(optionalByOwner.joint) >= 0.01 && (
+              <div className="tnum tiny muted" style={{ marginTop: 4 }}>
+                {money(optionalByOwner.joint)} on joint accounts, not split
+              </div>
+            )}
+          </>
+        )}
         {openBucket === 'optional' && (
           <BucketRows
             rows={rowsIn.get('optional') ?? []}
