@@ -426,7 +426,9 @@ export default function Month() {
       <LinePie
         lines={linesIn.optional.lines}
         unassigned={linesIn.optional.unassigned}
+        unassignedNote="not assigned to a line"
         catchAllName={CATCH_ALL}
+        emptyNote="Nothing discretionary this month."
       />
 
       {/*
@@ -435,9 +437,11 @@ export default function Month() {
         budget you cannot keep.
       */}
       <div className="sect">Fixed, by line</div>
-      <ByLine
-        group={linesIn.fixed}
+      <LinePie
+        lines={linesIn.fixed.lines}
+        unassigned={linesIn.fixed.unassigned}
         unassignedNote="not assigned to a line"
+        emptyNote="Nothing committed has gone out yet this month."
       />
       {!hasTransactions && (
         <div className="tiny muted" style={{ marginTop: 8 }}>
@@ -664,49 +668,3 @@ function BucketHeader({
   )
 }
 
-/**
- * One bucket's budget lines against what has gone to each.
- *
- * `unassigned` is shown rather than hidden. Optional has a catch-all line so it
- * is normally zero there, but fixed has none — and a table of lines that sums to
- * less than the bar above it, with no explanation, is how a category quietly
- * looks empty while the money is somewhere else entirely.
- */
-function ByLine({
-  group,
-  unassignedNote,
-}: {
-  group: { lines: { id: string; line_name: string; monthly_target: number; spent: number }[]; unassigned: number }
-  unassignedNote: string
-}) {
-  if (group.lines.length === 0) {
-    return <div className="sm muted">No budget lines here.</div>
-  }
-
-  return (
-    <table>
-      <tbody>
-        {group.lines.map((l) => (
-          <tr key={l.id}>
-            <td className="sm">{l.line_name}</td>
-            <td className="tnum sm" style={{ textAlign: 'right' }}>
-              {money(l.spent)}
-            </td>
-            <td className="tnum tiny muted" style={{ textAlign: 'right', width: 54 }}>
-              of {money(l.monthly_target)}
-            </td>
-          </tr>
-        ))}
-        {Math.abs(group.unassigned) >= 0.01 && (
-          <tr>
-            <td className="sm muted">{unassignedNote}</td>
-            <td className="tnum sm muted" style={{ textAlign: 'right' }}>
-              {money(group.unassigned)}
-            </td>
-            <td />
-          </tr>
-        )}
-      </tbody>
-    </table>
-  )
-}
