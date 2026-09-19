@@ -1,0 +1,59 @@
+#!/bin/sh
+# Block a commit that would record household PII.
+#
+# pre-push already refuses to publish PII, but by then it is in a commit, and
+# getting it out means rewriting history. Two real account masks sat in
+# comments across several commits that way. Catching it here keeps it out of
+# history altogether.
+#
+# Checks the full staged content of every added or modified file, not just the
+# diff, so a file that already carried PII is caught the first time it is
+# touched. The message is checked by commit-msg, which is the first hook that
+# can see it. Patterns are shared with pre-push via .githooks/pii-patterns,
+# which is gitignored.
+
+PATTERNS_FILE="$(git rev-parse --show-toplevel)/.githooks/pii-patterns"
+if [ ! -f "$PATTERNS_FILE" ]; then
+  echo "pre-commit: BLOCKED — .githooks/pii-patterns is missing, so nothing can be checked."
+  echo "pre-commit: Restore it before committing; an unchecked commit is how PII gets in."
+  exit 1
+fi
+
+FAIL=0
+files=$(git diff --cached --name-only --diff-filter=ACMR | grep -v '^\.githooks/pii-patterns$')
+
+while IFS= read -r pat; do
+  [ -z "$pat" ] && continue
+  case "$pat" in \#*) continue ;; esac
+  for f in $files; do
+    if git show ":$f" 2>/dev/null | grep -qiF "$pat"; then
+      echo "pre-commit: BLOCKED — '$pat' found in staged $f"
+      FAIL=1
+    fi
+  done
+  # A file NAME is published too.
+  if echo "$files" | grep -qiF "$pat"; then
+    echo "pre-commit: BLOCKED — '$pat' appears in a staged file name"
+    FAIL=1
+  fi
+done < "$PATTERNS_FILE"
+
+# Identity is recorded in the commit itself, so check it before it is.
+for who in GIT_AUTHOR_IDENT GIT_COMMITTER_IDENT; do
+  addr=$(git var "$who" | sed -n 's/.*<\(.*\)>.*/\1/p')
+  case "$addr" in
+    *@users.noreply.github.com|*noreply*|"") ;;
+    *)
+      echo "pre-commit: BLOCKED — this commit would be recorded as <$addr>."
+      echo "pre-commit: Use the noreply address: git config user.email '<id>+<user>@users.noreply.github.com'"
+      FAIL=1
+      ;;
+  esac
+done
+
+if [ "$FAIL" = "1" ]; then
+  echo ""
+  echo "pre-commit: nothing was committed. Use a generic illustration (e.g. ...0000)"
+  echo "pre-commit: in place of a real name, institution or account number."
+  exit 1
+fi

@@ -1,0 +1,31 @@
+#!/bin/sh
+# Block a commit whose MESSAGE carries household PII.
+#
+# A message is published exactly as widely as the files, and a commit
+# explaining a categorization fix is the kind that quotes a real account to
+# justify itself. pre-commit cannot see the message; this hook is the first
+# point that can. Patterns are shared via .githooks/pii-patterns.
+
+PATTERNS_FILE="$(git rev-parse --show-toplevel)/.githooks/pii-patterns"
+if [ ! -f "$PATTERNS_FILE" ]; then
+  echo "commit-msg: BLOCKED — .githooks/pii-patterns is missing, so the message cannot be checked."
+  exit 1
+fi
+
+# Comment lines are stripped by git before recording, so only check the rest.
+body=$(grep -v '^#' "$1")
+
+FAIL=0
+while IFS= read -r pat; do
+  [ -z "$pat" ] && continue
+  case "$pat" in \#*) continue ;; esac
+  if echo "$body" | grep -qiF "$pat"; then
+    echo "commit-msg: BLOCKED — '$pat' appears in the commit message."
+    FAIL=1
+  fi
+done < "$PATTERNS_FILE"
+
+if [ "$FAIL" = "1" ]; then
+  echo "commit-msg: nothing was committed. Reword the message without the real detail."
+  exit 1
+fi
