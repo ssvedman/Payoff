@@ -281,7 +281,7 @@ export default function Month() {
         </span>
       </div>
 
-      <MonthNav view={view} />
+      <MonthNav view={view} showLabel={false} />
 
       <div className="tnum sm muted" style={{ marginBottom: 20 }}>
         {income > 0 ? `${money(spentTotal)} spent of ${money(income)} in` : `${money(spentTotal)} spent`}

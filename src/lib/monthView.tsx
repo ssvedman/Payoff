@@ -181,7 +181,16 @@ export function useMonthView(): MonthView {
 }
 
 /** The ‹ September 2026 › control. One markup, so the two pages match. */
-export function MonthNav({ view, bordered }: { view: MonthView; bordered?: boolean }) {
+export function MonthNav({
+  view,
+  bordered,
+  /** /month names the month in its own heading, so the control would say it twice. */
+  showLabel = true,
+}: {
+  view: MonthView
+  bordered?: boolean
+  showLabel?: boolean
+}) {
   return (
     <div
       style={{
@@ -203,7 +212,7 @@ export function MonthNav({ view, bordered }: { view: MonthView; bordered?: boole
         ‹
       </button>
       <div className="sm tnum" style={{ fontWeight: 700 }}>
-        {view.label}
+        {showLabel ? view.label : ''}
       </div>
       <button
         type="button"
