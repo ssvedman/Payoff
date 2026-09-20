@@ -264,6 +264,10 @@ interface ProgressData {
   loading: boolean
   error: string | null
   actual: ActualPoint[]
+  /** Measured savings, same months and same rules as `actual`. */
+  actualSavings: ActualPoint[]
+  /** Measured cash across checking and savings. */
+  actualCash: ActualPoint[]
   provenance: SnapshotProvenance | null
   interest: ObservedInterest | null
 }
@@ -344,7 +348,14 @@ async function fetchMeasuredSnapshots(): Promise<{ data: SnapshotRow[]; error: s
  * Kept out of DataProvider: this is one page's data, it is not needed to render
  * anything else, and a failure here must not blank the app.
  */
-export function useProgressData(debts: Account[], planStartedOn: string | null): ProgressData {
+export function useProgressData(
+  debts: Account[],
+  planStartedOn: string | null,
+  /** Household checking and savings, for the cash side of net worth. */
+  cash: Account[] = [],
+  /** Savings only, for the savings chart. */
+  savings: Account[] = [],
+): ProgressData {
   const [rows, setRows] = useState<SnapshotRow[] | null>(null)
   const [totalSnapshots, setTotalSnapshots] = useState(0)
   const [interestRows, setInterestRows] = useState<
@@ -364,6 +375,16 @@ export function useProgressData(debts: Account[], planStartedOn: string | null):
    * reports; it does not fill a gap with the most flattering reading of it.
    */
   const [interestFailed, setInterestFailed] = useState(false)
+
+  /**
+   * Stable keys for the memo below.
+   *
+   * useData() hands back a fresh array on every provider render, so depending on
+   * the arrays themselves would rebuild these series on each pass and defeat the
+   * memo entirely. The ids are what actually decide the answer.
+   */
+  const cashKey = useMemo(() => cash.map((a) => a.id).sort().join(','), [cash])
+  const savingsKey = useMemo(() => savings.map((a) => a.id).sort().join(','), [savings])
 
   useEffect(() => {
     let active = true
@@ -415,7 +436,15 @@ export function useProgressData(debts: Account[], planStartedOn: string | null):
 
   return useMemo(() => {
     if (rows === null) {
-      return { loading: true, error, actual: [], provenance: null, interest: null }
+      return {
+        loading: true,
+        error,
+        actual: [],
+        actualSavings: [],
+        actualCash: [],
+        provenance: null,
+        interest: null,
+      }
     }
 
     const debtIds = new Set(debts.map((d) => d.id))
@@ -439,6 +468,10 @@ export function useProgressData(debts: Account[], planStartedOn: string | null):
       loading: false,
       error,
       actual: buildActualSeries(rows, debtIds),
+      // Same rows, same coverage rule, different accounts — so a month appears
+      // on the savings line only once every savings account has a reading in it.
+      actualSavings: buildActualSeries(rows, new Set(savingsKey ? savingsKey.split(',') : [])),
+      actualCash: buildActualSeries(rows, new Set(cashKey ? cashKey.split(',') : [])),
       provenance: describeSnapshots(rows, debts, Math.max(0, totalSnapshots - rows.length)),
       // null, not a zeroed-out object: the page has to be able to tell "no
       // interest was charged" from "we could not find out".
@@ -451,5 +484,16 @@ export function useProgressData(debts: Account[], planStartedOn: string | null):
         since: planStartedOn,
       },
     }
-  }, [rows, totalSnapshots, interestRows, everRows, debts, planStartedOn, error, interestFailed])
+  }, [
+    rows,
+    totalSnapshots,
+    interestRows,
+    everRows,
+    debts,
+    planStartedOn,
+    error,
+    interestFailed,
+    cashKey,
+    savingsKey,
+  ])
 }

@@ -50,6 +50,15 @@ interface Props {
   milestones: Milestone[]
   format: (n: number) => string
   height?: number
+  /**
+   * What the chart is OF, for the screen-reader label. Three charts share this
+   * component now, and one of them announcing itself as the others' subject is
+   * worse than no label.
+   */
+  title?: string
+  /** How the series read in the label, when they are not a debt being cleared. */
+  planLabel?: string
+  noRollLabel?: string
 }
 
 export const PLAN_COLOR = 'var(--ink)'
@@ -70,6 +79,9 @@ export default function ProjectionChart({
   milestones,
   format,
   height = 210,
+  title = 'Total debt',
+  planLabel,
+  noRollLabel,
 }: Props) {
   /**
    * Held as an element in state rather than a useRef, because the first render
@@ -128,12 +140,24 @@ export default function ProjectionChart({
     const domainMax = Math.max(plan.length - 1, noRoll.length - 1)
     const span = Math.max(1, domainMax - domainMin)
 
-    // Money from zero. A fitted baseline would exaggerate the gap between two
-    // curves that both end at nothing.
-    const maxV = Math.max(...plan, ...noRoll, ...actual.map((a) => a.total), 1)
+    /**
+     * Money from zero. A fitted baseline would exaggerate the gap between two
+     * curves that both end at nothing.
+     *
+     * Zero stays on the axis even when the values are NEGATIVE, which net worth
+     * is for the next two years. Fitting the floor to the lowest value instead
+     * would put the worst month on the bottom edge and make a balance sheet
+     * climbing out of a hole look like one sitting on the floor — and it would
+     * hide the crossing into positive, which is the single most meaningful point
+     * on that chart.
+     */
+    const values = [...plan, ...noRoll, ...actual.map((a) => a.total)]
+    const maxV = Math.max(...values, 1)
+    const minV = Math.min(...values, 0)
+    const spanV = Math.max(maxV - minV, 1)
 
     const x = (m: number) => PAD.left + ((m - domainMin) / span) * innerW
-    const y = (v: number) => PAD.top + innerH - (v / maxV) * innerH
+    const y = (v: number) => PAD.top + innerH - ((v - minV) / spanV) * innerH
 
     const path = (values: number[], from = 0) =>
       values.map((v, i) => `${i === 0 ? 'M' : 'L'}${x(from + i)},${y(v)}`).join(' ')
@@ -144,6 +168,7 @@ export default function ProjectionChart({
       x,
       y,
       maxV,
+      minV,
       planPath: path(plan),
       noRollPath: path(noRoll),
       actualPath: actual.map((a, i) => `${i === 0 ? 'M' : 'L'}${x(a.monthIndex)},${y(a.total)}`).join(' '),
@@ -158,8 +183,11 @@ export default function ProjectionChart({
     )
   }
 
-  const { x, y, domainMin, domainMax } = geom
+  const { x, y, domainMin, domainMax, minV } = geom
   const baselineY = PAD.top + innerH
+  /** Where zero sits. Below the floor when everything is positive. */
+  const zeroY = y(0)
+  const showsZeroLine = minV < 0
   const planMonths = plan.length - 1
   const noRollMonths = noRoll.length - 1
 
@@ -183,8 +211,11 @@ export default function ProjectionChart({
           height={H}
           role="img"
           aria-label={
-            `Total debt by month. The plan clears it in ${planMonths} months; ` +
-            `paying minimums only takes ${noRollMonths}. ` +
+            `${title} by month. ` +
+            (planLabel && noRollLabel
+              ? `${planLabel}; ${noRollLabel}. `
+              : `The plan clears it in ${planMonths} months; ` +
+                `paying minimums only takes ${noRollMonths}. `) +
             (actual.length > 0
               ? `${actual.length} month${actual.length === 1 ? '' : 's'} measured so far.`
               : 'Nothing measured yet.')
@@ -193,6 +224,33 @@ export default function ProjectionChart({
           onPointerMove={onMove}
           onPointerLeave={() => setHover(null)}
         >
+          {/* Zero, when the values cross it. On a net worth chart this is the
+              line the balance sheet is climbing towards, so it is drawn a shade
+              stronger than the floor and labelled. */}
+          {showsZeroLine && (
+            <>
+              <line
+                x1={PAD.left}
+                y1={zeroY}
+                x2={W - PAD.right}
+                y2={zeroY}
+                stroke="var(--steel)"
+                strokeWidth="1"
+                strokeDasharray="3 3"
+              />
+              <text
+                x={PAD.left}
+                y={zeroY - 4}
+                className="tnum"
+                fontFamily="inherit"
+                fontSize="9"
+                fill="var(--steel)"
+              >
+                0
+              </text>
+            </>
+          )}
+
           {/* Hairline baseline only — no gridlines competing with three series. */}
           <line
             x1={PAD.left}

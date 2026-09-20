@@ -1,10 +1,16 @@
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
+import {
+  flatLine,
+  projectNetWorth,
+  projectSavings,
+  sharedHorizon,
+} from '../lib/progressProjections'
 import ProjectionChart, {
   ACTUAL_COLOR,
   type Milestone,
 } from '../components/ProjectionChart'
-import { useData, usePayoffPlan } from '../lib/data'
+import { useData, useNetWorth, usePayoffPlan } from '../lib/data'
 import {
   completedPlanMonths,
   noRollInterestSoFar,
@@ -44,11 +50,118 @@ function monthLabel(monthsAhead: number): string {
 }
 
 export default function Progress() {
-  const { debts, plan: planSettings, loading } = useData()
+  const { debts, plan: planSettings, loading, accounts, savingsAccounts } = useData()
   const payoff = usePayoffPlan()
-  const { loading: extrasLoading, error, actual, provenance, interest } = useProgressData(
+  const netWorthNow = useNetWorth()
+
+  /**
+   * The cash side of net worth, defined EXACTLY as useNetWorth() defines it —
+   * every checking and savings account, the business's included.
+   *
+   * Not `checking` from the provider, which is household-only by design for the
+   * calendar's cash projection. Using that here would have put −$55,695 on this
+   * page against −$52,348 on the home screen: the same quantity, two screens,
+   * two answers, differing by the business balance.
+   */
+  const cashAccounts = useMemo(
+    () => accounts.filter((a) => a.kind === 'checking' || a.kind === 'savings'),
+    [accounts],
+  )
+
+  const {
+    loading: extrasLoading,
+    error,
+    actual,
+    actualSavings,
+    actualCash,
+    provenance,
+    interest,
+  } = useProgressData(
     debts,
     planSettings?.plan_started_on ?? null,
+    cashAccounts,
+    savingsAccounts,
+  )
+
+  const monthlySavings = planSettings?.monthly_savings ?? 0
+  const depositTarget = planSettings?.deposit_target ?? 0
+
+  /**
+   * Savings and net worth over the same month index as the debt runs.
+   *
+   * Built from the SAME sim.balances and noRollSim.balances the debt chart
+   * draws, so the three charts cannot disagree about what month it is or about
+   * what is owed in it.
+   */
+  const projections = useMemo(() => {
+    if (!payoff) return null
+    const months = sharedHorizon(payoff.sim.balances, payoff.noRollSim.balances)
+
+    const savingsNow = savingsAccounts.reduce((sum, a) => sum + a.balance, 0)
+    // The rest of the cash, held flat. Taken as the whole cash total less the
+    // savings being projected, so month 0 lands on exactly the figure the home
+    // screen shows rather than near it.
+    const checkingNow = netWorthNow.cashTotal - savingsNow
+
+    const savingsPlan = projectSavings(savingsNow, monthlySavings, depositTarget, months)
+    const savingsNothing = flatLine(savingsNow, months)
+
+    return {
+      months,
+      savingsPlan,
+      savingsNothing,
+      netWorthPlan: projectNetWorth(
+        netWorthNow.assetsTotal,
+        checkingNow,
+        savingsPlan,
+        payoff.sim.balances,
+        months,
+      ),
+      netWorthNothing: projectNetWorth(
+        netWorthNow.assetsTotal,
+        checkingNow,
+        savingsNothing,
+        payoff.noRollSim.balances,
+        months,
+      ),
+    }
+  }, [
+    payoff,
+    savingsAccounts,
+    monthlySavings,
+    depositTarget,
+    netWorthNow.assetsTotal,
+    netWorthNow.cashTotal,
+  ])
+
+  /**
+   * The measured lines.
+   *
+   * Net worth per month is assets plus measured cash less measured debt. Assets
+   * carry one valuation each, so they are held at it rather than given a history
+   * nobody recorded — the same assumption the projection makes, stated on screen.
+   * A month appears only where BOTH the cash and debt sides have full coverage;
+   * a net worth built from a complete debt total and half the cash would move for
+   * a reason that is not real.
+   */
+  const actualNetWorth = useMemo(() => {
+    const cashBy = new Map(actualCash.map((p) => [p.monthKey, p.total]))
+    return actual
+      .filter((d) => cashBy.has(d.monthKey))
+      .map((d) => ({
+        monthIndex: d.monthIndex,
+        total: round2(netWorthNow.assetsTotal + (cashBy.get(d.monthKey) as number) - d.total),
+      }))
+  }, [actual, actualCash, netWorthNow.assetsTotal])
+
+  const savingsPlan = projections?.savingsPlan ?? []
+  const savingsNothing = projections?.savingsNothing ?? []
+  const netWorthPlan = projections?.netWorthPlan ?? []
+  const netWorthNothing = projections?.netWorthNothing ?? []
+
+  const actualSavingsPoints = useMemo(
+    () => actualSavings.map((p) => ({ monthIndex: p.monthIndex, total: p.total })),
+    [actualSavings],
   )
 
   /**
@@ -137,6 +250,8 @@ export default function Progress() {
         use, and the clearing order beside it wants the room more. Below 1024px
         this is an ordinary div and the chart takes the page width.
       */}
+      <div className="sect">Total debt</div>
+
       <div className="dk-cols dk-cols--chart">
       <div>
       <ProjectionChart
@@ -230,8 +345,74 @@ export default function Progress() {
       </div>
 
       <div>
+      {/* ---- net worth ---- */}
+
+      {/*
+        The figure that goes UP. Debt falling is the same story told from the
+        only angle where the best possible outcome is an empty chart; this one
+        has somewhere to go. It rises from two directions at once — debt falling
+        and savings accumulating — which is why it earns its own axes rather
+        than being inferred from the one above.
+      */}
+      <div className="sect">Net worth</div>
+      <div className="sm muted" style={{ marginBottom: 8 }}>
+        Everything owned, less everything owed. Negative today, and rising.
+      </div>
+
+      <ProjectionChart
+        plan={netWorthPlan}
+        noRoll={netWorthNothing}
+        actual={actualNetWorth}
+        milestones={[]}
+        format={money}
+        title="Net worth"
+        planLabel={`under the plan it reaches ${money(netWorthPlan[netWorthPlan.length - 1] ?? 0)}`}
+        noRollLabel={`paying minimums only it reaches ${money(netWorthNothing[netWorthNothing.length - 1] ?? 0)}`}
+      />
+
+      {/* The assumptions, on the chart rather than in a commit message. Each one
+          is a place this could quietly mislead, so each one is named. */}
+      <div className="card-panel tiny muted" style={{ marginTop: 10, lineHeight: 1.6 }}>
+        Vehicle values are held at what they were last valued at, so a figure
+        years out is optimistic by whatever they depreciate. Current-account
+        balances are held flat — they hover around a working balance rather than
+        trend, and giving them one would put drift into every figure here.
+        Savings is projected separately, below.
+      </div>
+
+      {/* ---- savings ---- */}
+
+      <div className="sect" style={{ marginTop: 18 }}>
+        Savings
+      </div>
+      <div className="sm muted" style={{ marginBottom: 8 }}>
+        {depositTarget > 0
+          ? `Deposit of ${money(monthlySavings)} a month toward ${money(depositTarget)}.`
+          : `Deposit of ${money(monthlySavings)} a month.`}
+      </div>
+
+      <ProjectionChart
+        plan={savingsPlan}
+        noRoll={savingsNothing}
+        actual={actualSavingsPoints}
+        milestones={[]}
+        format={money}
+        title="Savings"
+        planLabel={`under the plan it reaches ${money(savingsPlan[savingsPlan.length - 1] ?? 0)}`}
+        noRollLabel="without the plan it stays where it is"
+      />
+
+      <div className="card-panel tiny muted" style={{ marginTop: 10, lineHeight: 1.6 }}>
+        The monthly deposit is part of the plan, so the line that does not follow
+        the plan does not make it — it sits where the balance is today.
+        {depositTarget > 0 &&
+          ' Once the target is reached the line holds there: what happens to a deposit after it is saved is not on record, and either guess would be invented.'}
+      </div>
+
       {/* ---- interest ---- */}
-      <div className="sect">Interest</div>
+      <div className="sect" style={{ marginTop: 18 }}>
+        Interest
+      </div>
 
       <div className="card-panel" style={{ marginBottom: 12 }}>
         <div className="caps" style={{ marginBottom: 10 }}>
