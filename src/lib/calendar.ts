@@ -295,7 +295,7 @@ function useHistory(
     for (let page = 0; ; page++) {
       const { data, error } = await supabase
         .from('transactions')
-        .select('account_id, merchant_name, name, amount, posted_on, pending')
+        .select('account_id, merchant_name, name, amount, posted_on, pending, budget_line_id')
         .in('account_id', ids)
         .gte('posted_on', fromIso)
         .lte('posted_on', toIso)

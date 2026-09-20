@@ -89,6 +89,13 @@ export interface CadenceEvent {
   /** A date-only column, YYYY-MM-DD. */
   posted_on: string
   pending: boolean
+  /**
+   * The budget line this row was filed against, when it has one.
+   *
+   * This is the only EXACT statement in the data that two differently-worded
+   * charges are the same obligation. See reconcileRoutes().
+   */
+  budget_line_id?: string | null
 }
 
 export type CadenceKind =
@@ -107,6 +114,14 @@ export interface SeriesEvent {
   date: string
   /** Magnitude, always positive. Direction is carried by the series. */
   amount: number
+}
+
+/** The same obligation, paid on a different date by a different route. */
+export interface PaidElsewhere {
+  on: string
+  accountId: string
+  label: string
+  daysAgo: number
 }
 
 export interface Series {
@@ -141,6 +156,14 @@ export interface Series {
   stopped: boolean
   /** Why there is no projected date, in plain words. Null when there is one. */
   note: string | null
+  /** Modal budget line across this series' rows. Null when none is filed. */
+  budgetLineId: string | null
+  /**
+   * Set when this route went quiet but the SAME obligation was paid another way
+   * since. Rent alternates between two accounts under two merchant spellings, so
+   * each half looked abandoned while the rent itself was never once late.
+   */
+  paidElsewhere: PaidElsewhere | null
 }
 
 /* ------------------------------------------------------------------ *
@@ -437,6 +460,111 @@ export function seriesKeyFor(
   return `${e.account_id}|${descriptor}|${directionOf(e.amount)}`
 }
 
+
+/**
+ * How far apart two amounts may be and still count as the same obligation.
+ *
+ * Rent ran 2,476.05 / 2,486.00 / 2,486.88 / 2,507.66 / 2,636.00 over six months —
+ * a 6.5% spread — so the window has to be wider than that. It must not be much
+ * wider: the guard against a false match is the budget line PLUS the amount, and
+ * two different subscriptions filed against one line are exactly what a loose
+ * window would merge.
+ */
+const SAME_OBLIGATION_TOLERANCE = 0.1
+
+/**
+ * One obligation, paid by more than one route.
+ *
+ * The series key is account|descriptor|direction, which is right for projecting
+ * money out of a particular account and wrong for asking "is this bill late".
+ * Rent here alternates between two accounts, and each one reports the landlord
+ * under a different spelling, so each half falls silent for months at a time
+ * while the rent itself has never once been late. The page reported 46 days late
+ * on a bill paid sixteen days earlier from the other account — the calendar
+ * crying wolf on the one screen whose whole value is that its warnings are worth
+ * believing.
+ *
+ * The budget line is the only EXACT statement in the data that two differently
+ * worded charges are the same thing, so that is what this matches on, with the
+ * amount as a second key. Descriptor similarity was the obvious alternative and
+ * is not safe: in this very data the landlord and the car insurer share their
+ * first eight characters, and merging those two would be a worse bug than the
+ * one being fixed.
+ *
+ * Nothing is hidden. A series that was paid another way keeps its own dates and
+ * says where the money actually went — see paidElsewhere. It is only the CLAIM
+ * that the bill is late that is withdrawn.
+ */
+function reconcileRoutes(series: Series[], todayIso: string): Series[] {
+  const byLine = new Map<string, Series[]>()
+  for (const s of series) {
+    if (!s.budgetLineId) continue
+    const list = byLine.get(s.budgetLineId) ?? []
+    list.push(s)
+    byLine.set(s.budgetLineId, list)
+  }
+
+  return series.map((s) => {
+    if (!s.overdue && !s.stopped) return s
+    if (!s.budgetLineId) return s
+
+    const siblings = byLine.get(s.budgetLineId) ?? []
+    let best: Series | null = null
+    for (const o of siblings) {
+      if (o.key === s.key) continue
+      if (o.direction !== s.direction) continue
+      if (o.lastOn <= s.lastOn) continue
+      // Same line AND a comparable amount. Either alone is too weak.
+      const ref = Math.max(s.medianAmount, 1)
+      if (Math.abs(o.medianAmount - s.medianAmount) / ref > SAME_OBLIGATION_TOLERANCE) continue
+      if (!best || o.lastOn > best.lastOn) best = o
+    }
+
+    if (!best) return s
+
+    const daysAgo = daysBetween(best.lastOn, todayIso)
+    const paidElsewhere: PaidElsewhere = {
+      on: best.lastOn,
+      accountId: best.accountId,
+      label: best.label,
+      daysAgo,
+    }
+
+    // Still late if the OBLIGATION is late — the other route being more recent
+    // does not help if it is also months old.
+    const cycle = s.medianGap ?? 0
+    const stillOverdue = cycle > 0 && daysAgo > OVERDUE_FACTOR * cycle
+
+    /**
+     * Only ONE route may put the payment on the grid.
+     *
+     * Both halves of a moved obligation can be regular enough to date, and then
+     * the rent gets projected twice in the same month — roughly $2,500 of
+     * outflow that is not going to happen, which is more than enough to
+     * manufacture a day that reads as going below zero. A false shortfall costs
+     * exactly as much trust as a missed one.
+     *
+     * The more recent route wins, because it is the one the money is actually
+     * using now. Where the newer route has no date of its own, this one keeps
+     * its projection rather than leaving the obligation off the grid entirely.
+     */
+    const cedesProjection = best.nextOn !== null && s.nextOn !== null
+
+    return {
+      ...s,
+      paidElsewhere,
+      overdue: stillOverdue,
+      stopped: false,
+      nextOn: cedesProjection ? null : s.nextOn,
+      note: cedesProjection
+        ? `paid from ${best.label} since ${best.lastOn} — counted there, not here`
+        : stillOverdue
+          ? s.note
+          : null,
+    }
+  })
+}
+
 export function detectSeries(events: CadenceEvent[], opts: DetectOptions): Series[] {
   const { today, windowDays = WINDOW_DAYS, accountIds } = opts
 
@@ -448,7 +576,15 @@ export function detectSeries(events: CadenceEvent[], opts: DetectOptions): Serie
   /** date -> summed magnitude, per series. */
   const groups = new Map<
     string,
-    { accountId: string; direction: Direction; names: string[]; merchant: string | null; byDay: Map<string, number> }
+    {
+      accountId: string
+      direction: Direction
+      names: string[]
+      merchant: string | null
+      byDay: Map<string, number>
+      /** How many rows carried each budget line. The modal one identifies the obligation. */
+      budgetLines: Map<string, number>
+    }
   >()
 
   for (const e of events) {
@@ -474,6 +610,7 @@ export function detectSeries(events: CadenceEvent[], opts: DetectOptions): Serie
         names: [],
         merchant: e.merchant_name?.trim() || null,
         byDay: new Map(),
+        budgetLines: new Map(),
       }
       groups.set(key, g)
     }
@@ -482,6 +619,9 @@ export function detectSeries(events: CadenceEvent[], opts: DetectOptions): Serie
     // one arrival of $600; counted separately they produce gaps of zero days,
     // which makes the median zero and the projection divide by it.
     g.byDay.set(e.posted_on, (g.byDay.get(e.posted_on) ?? 0) + Math.abs(e.amount))
+    if (e.budget_line_id) {
+      g.budgetLines.set(e.budget_line_id, (g.budgetLines.get(e.budget_line_id) ?? 0) + 1)
+    }
   }
 
   const out: Series[] = []
@@ -511,6 +651,9 @@ export function detectSeries(events: CadenceEvent[], opts: DetectOptions): Serie
       lastOn,
       daysSinceLast,
       medianAmount: median(seriesEvents.map((e) => e.amount)),
+      budgetLineId:
+        [...g.budgetLines.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null,
+      paidElsewhere: null as PaidElsewhere | null,
     }
 
     if (seriesEvents.length < MIN_EVENTS) {
@@ -600,5 +743,6 @@ export function detectSeries(events: CadenceEvent[], opts: DetectOptions): Serie
   }
 
   // Biggest money first: what matters on this page is size, not alphabet.
-  return out.sort((a, b) => b.medianAmount - a.medianAmount)
+  // Withdraw any 'late' claim about a bill that was paid by another route.
+  return reconcileRoutes(out, todayIso).sort((a, b) => b.medianAmount - a.medianAmount)
 }

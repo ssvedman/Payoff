@@ -213,6 +213,8 @@ export function confirmedSeries(
         overdue: false,
         stopped: false,
         note: 'marked as recurring by hand — not yet observed',
+        budgetLineId: null,
+        paidElsewhere: null,
       } satisfies Series
     })
 }

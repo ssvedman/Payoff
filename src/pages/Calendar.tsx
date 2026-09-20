@@ -5,6 +5,7 @@ import { useCalendar, useCalendarMonth, type DayCell, type DuePayment, type Expe
 import { cadenceLabel, type Series } from '../lib/cadence'
 import { dayHeading, isoDate, money, moneyCents, parseDateOnly, signedAmount } from '../lib/format'
 import { useRecurringOverrides } from '../lib/recurring'
+import { useData } from '../lib/data'
 
 /**
  * /calendar — when money moves, and where household checking is projected to sit
@@ -45,6 +46,13 @@ export default function Calendar() {
   const [overrideError, setOverrideError] = useState<string | null>(null)
 
   const { dismiss, remove } = useRecurringOverrides()
+  const { accounts } = useData()
+
+  /** Account id to its display name, for saying where a payment actually went. */
+  const accountName = useCallback(
+    (id: string) => accounts.find((a) => a.id === id)?.name ?? 'another account',
+    [accounts],
+  )
 
   const todayIso = isoDate(new Date())
 
@@ -234,7 +242,13 @@ export default function Calendar() {
       ) : (
         <div style={{ borderTop: '2px solid var(--ink)' }}>
           {model.projectedSeries.map((s) => (
-            <SeriesRow key={s.key} s={s} onDismiss={dismissSeries} busy={busyKey === s.key} />
+            <SeriesRow
+              key={s.key}
+              s={s}
+              onDismiss={dismissSeries}
+              busy={busyKey === s.key}
+              accountName={accountName}
+            />
           ))}
         </div>
       )}
@@ -593,10 +607,12 @@ function SeriesRow({
   s,
   onDismiss,
   busy,
+  accountName,
 }: {
   s: Series
   onDismiss: (s: Series) => void
   busy: boolean
+  accountName: (id: string) => string
 }) {
   // A hand-marked series has no observations to report, and saying "0 observed"
   // next to a confident date would read as a measurement that came back empty.
@@ -613,6 +629,15 @@ function SeriesRow({
           {marked ? ' · marked by hand, not yet observed' : ` · ${s.events.length} observed`}
           {s.missedCycles > 0 && ` · ${s.missedCycles} cycle${s.missedCycles === 1 ? '' : 's'} missed`}
         </div>
+        {/* This route went quiet, but the same budget line was paid another way
+            since. Said out loud rather than silently folded together, because
+            the two really are separate movements of money. */}
+        {s.paidElsewhere && (
+          <div className="tiny tnum" style={{ color: 'var(--green-tx)' }}>
+            paid {s.paidElsewhere.daysAgo} days ago from{' '}
+            {accountName(s.paidElsewhere.accountId)}
+          </div>
+        )}
         {/* Dismissing records the last date seen, so a charge taken after it is
             reported rather than silently suppressed. Said here, once, because
             "no longer active" otherwise sounds like it means "hide this". */}
@@ -640,8 +665,16 @@ function SeriesRow({
         <div className="sm tnum" style={{ color: s.direction === 'in' ? 'var(--ink)' : 'var(--steel)' }}>
           {signedAmount(s.direction === 'in' ? s.medianAmount : -s.medianAmount)}
         </div>
+        {/*
+          Days LATE, not days since the last payment. Those differ by a whole
+          cycle: a monthly bill last paid 46 days ago is 16 days late, and
+          printing the larger figure made an overdue rent look like it had been
+          missed twice over.
+        */}
         <div className="tiny tnum" style={{ color: s.overdue ? 'var(--red-tx)' : 'var(--steel)' }}>
-          {s.overdue ? `${s.daysSinceLast} days late` : `next ${s.nextOn}`}
+          {s.overdue
+            ? `${Math.max(1, Math.round(s.daysSinceLast - (s.medianGap ?? 0)))} days late`
+            : `next ${s.nextOn}`}
         </div>
       </div>
     </div>
