@@ -11,8 +11,7 @@ import {
   parseDateOnly,
   relativeTime,
   rateLabel,
-  dueLabel,
-  daysUntil,
+  dueStatus,
 } from '../lib/format'
 import {
   useFrozenPlan,
@@ -78,20 +77,28 @@ function useIsDesktop(): boolean {
 function DebtSubLine({
   debt,
 }: {
-  debt: { apr: number | null; kind: string; owner: string; next_due_on: string | null }
+  debt: {
+    apr: number | null
+    kind: string
+    owner: string
+    next_due_on: string | null
+    last_payment_on: string | null
+    last_payment_amount: number | null
+  }
 }) {
-  const due = dueLabel(debt.next_due_on)
-  const days = daysUntil(debt.next_due_on)
-  const urgent = days !== null && days <= 2
+  // dueStatus, not dueLabel: the due date on its own reports a bill as late for
+  // having been paid on time, because the issuer only advances it when the next
+  // statement cuts. A payment on or after the due date withdraws the claim.
+  const { label, urgent } = dueStatus(debt)
 
   return (
     <span className="tiny muted tnum">
       {rateLabel(debt)} · {ownerLabel(debt.owner)}
-      {due && urgent && (
+      {label && urgent && (
         <>
           {' · '}
           <span className="is-bad" style={{ fontWeight: 700 }}>
-            {due}
+            {label}
           </span>
         </>
       )}
@@ -766,7 +773,9 @@ export default function Home() {
               <div className="tiny hero__note tnum" style={{ marginTop: 3 }}>
                 {rateLabel(target)} · {ownerLabel(target.owner)} · {money(plan.attackFund)} above
                 the {money(targetMin)} minimum
-                {dueLabel(target.next_due_on) ? ` · ${dueLabel(target.next_due_on)}` : ''}
+                {/* Same reason as DebtSubLine: the due date alone would call a
+                    card paid on its due date overdue until the next statement. */}
+                {dueStatus(target).label ? ` · ${dueStatus(target).label}` : ''}
               </div>
 
               {/* .hero .bar already recesses the track against the ink panel. */}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import Bar from '../components/Bar'
 import SpendingBucketRows from '../components/SpendingBucketRows'
 import SpendingSixMonths from '../components/SpendingSixMonths'
@@ -38,17 +38,23 @@ import {
  * that is merely incomplete part-way through the month is steel, not red —
  * nothing has deviated yet.
  *
- * WHO THE MONEY BELONGS TO is a filter over the detail, never over the bars.
- * The targets behind the four bars are budgeted for the household and there is
- * no per-person one, so a bar redrawn for one person would either divide a
- * target that does not divide or lose the target that gives it its meaning.
- * Option (a) of the two on the table: the bars, their rows and the pace line
- * stay household-wide whatever chip is held down, and the owner filter narrows
- * the by-line tables and the biggest items only. A rule under the bars says so,
- * because a filter that appears to narrow everything and quietly does not is
- * the failure this feature is most likely to produce. The one per-person figure
- * that does sit beside a bar states its own denominator: a share of what was
- * spent, never a share of a target.
+ * WHO THE MONEY BELONGS TO narrows EVERYTHING on the page except the targets.
+ *
+ * The first attempt narrowed only the detail tables and left the four bars and
+ * the rows behind them household-wide, on the reasoning that a target does not
+ * divide. That reasoning is right and the conclusion was wrong: the page then
+ * looked filtered and was not, and opening a bucket under one person's chip
+ * listed everybody's charges. A filter that appears to narrow everything and
+ * quietly does not is the worst of the available failures, because the figure
+ * it leaves on screen is exactly as authoritative-looking as the right one.
+ *
+ * So the bars, their rows and the tables all follow the chip, and the TARGET is
+ * what gets withdrawn instead: no target, no pace and no "met" reading while a
+ * person is selected, because every one of those is a household judgement and
+ * there is no per-person budget anywhere in the data to make them from. Each
+ * bar becomes a share of what the household actually spent in that bucket,
+ * which is a true sentence with its own denominator. The six-month history
+ * stays household, because it reports months rather than people.
  *
  * The filter is a SEPARATE axis from the business exclusion below, and applies
  * after it. The business accounts are in one person's name, so narrowing to
@@ -146,7 +152,16 @@ export default function Spending() {
     return (id: string) => byId.get(id) ?? 'Unlinked account'
   }, [accounts])
 
-  /** Largest first: the rows worth looking at are the ones moving the total. */
+  /**
+   * This month's rows, split by bucket, newest first.
+   *
+   * Ordered by the date the charge posted rather than by size. These lists feed
+   * the detail tables, and a ledger reads in time order: sorting by amount put
+   * the month's largest charge at the top of every list regardless of when it
+   * happened, which answers a question nobody was asking of a list of
+   * transactions. Aggregations further down still rank by size, where largest
+   * first IS the question.
+   */
   const rowsIn = useMemo(() => {
     const groups = new Map<string, Transaction[]>()
     for (const t of transactions) {
@@ -154,9 +169,40 @@ export default function Spending() {
       list.push(t)
       groups.set(t.bucket, list)
     }
-    for (const list of groups.values()) list.sort((a, b) => b.amount - a.amount)
+    for (const list of groups.values())
+      list.sort((a, b) =>
+        a.posted_on === b.posted_on ? b.amount - a.amount : a.posted_on < b.posted_on ? 1 : -1,
+      )
     return groups
   }, [transactions])
+
+  /**
+   * The same rows as `rowsIn`, narrowed to the selected person.
+   *
+   * The bucket bars and the rows behind them used to read `rowsIn` directly, so
+   * holding down a person's chip changed the detail tables on the right and
+   * left the whole left-hand column exactly as it was. Opening a bucket then
+   * listed everybody's transactions under that person's name, which is worse
+   * than not filtering at all: the page looked filtered and was not.
+   *
+   * Household figures are still computed from `rowsIn`, because a target, a
+   * pace and an attack-fund obligation belong to the household and do not
+   * divide. This map decides what is SHOWN, not what is judged.
+   */
+  const rowsInView = useMemo(() => {
+    if (!filtered) return rowsIn
+    const out = new Map<string, Transaction[]>()
+    for (const [bucket, list] of rowsIn) {
+      out.set(bucket, filterByOwner(list, ownerFilter, ownerOf))
+    }
+    return out
+  }, [rowsIn, filtered, ownerFilter, ownerOf])
+
+  /** What the person on screen spent in one bucket. The household's when unfiltered. */
+  const shownIn = useCallback(
+    (bucket: string) => (rowsInView.get(bucket) ?? []).reduce((sum, t) => sum + t.amount, 0),
+    [rowsInView],
+  )
 
   /** The month's discretionary rows, which are the only ones split by person. */
   const optionalRows = useMemo(() => rowsIn.get('optional') ?? [], [rowsIn])
@@ -221,8 +267,23 @@ export default function Spending() {
   const optionalTarget = totals.bucketTarget('optional')
   const fixedSpent = totals.bucketSpent('fixed')
   const fixedTarget = totals.bucketTarget('fixed')
+
+  /**
+   * What each bar DRAWS. Equal to the household figure until a person is
+   * selected, at which point it is that person's share of it.
+   *
+   * Kept separate from the household figures above rather than replacing them,
+   * because the two are asked different questions: these are shown, those are
+   * judged. Pace, the target comparison and the attack-fund obligation all stay
+   * on the household figures, and are withdrawn from the screen rather than
+   * recomputed per person when a chip is held down.
+   */
+  const optionalShown = shownIn('optional')
+  const fixedShown = shownIn('fixed')
   const attackSpent = totals.bucketSpent('attack')
   const savingsSpent = totals.bucketSpent('savings')
+  const attackShown = shownIn('attack')
+  const savingsShown = shownIn('savings')
 
   const spentTotal = fixedSpent + optionalSpent + attackSpent + savingsSpent
   const income = totals.income
@@ -596,22 +657,48 @@ export default function Spending() {
           <div style={{ marginBottom: 16 }}>
             <BucketHeader
               label="Optional"
-              count={(rowsIn.get('optional') ?? []).length}
+              count={(rowsInView.get('optional') ?? []).length}
               open={openBucket === 'optional'}
               onToggle={() => setOpenBucket((c) => (c === 'optional' ? null : 'optional'))}
               right={
-                <span className={`tnum ${optionalClass}`} style={{ fontWeight: 700 }}>
-                  {money(optionalSpent)} / {money(optionalTarget)}
-                </span>
+                /* Filtered, the target comes off: it is the household's and
+                   does not divide, so "$604 / $1,117" under one person's name
+                   would put two denominators in one sentence. The share line
+                   beneath supplies the honest one. */
+                filtered ? (
+                  <span className="tnum muted" style={{ fontWeight: 700 }}>
+                    {money(optionalShown)}
+                  </span>
+                ) : (
+                  <span className={`tnum ${optionalClass}`} style={{ fontWeight: 700 }}>
+                    {money(optionalSpent)} / {money(optionalTarget)}
+                  </span>
+                )
               }
             />
-            <Bar pct={optionalTarget > 0 ? optionalSpent / optionalTarget : 0} color={optionalColor} />
+            <Bar
+              pct={
+                filtered
+                  ? optionalSpent > 0
+                    ? optionalShown / optionalSpent
+                    : 0
+                  : optionalTarget > 0
+                    ? optionalSpent / optionalTarget
+                    : 0
+              }
+              color={filtered ? 'var(--steel)' : optionalColor}
+            />
             {/* tnum, like every other figure: the pace line carries two of the
                 loudest numbers on the page and they must line up with the
                 total directly above them. */}
-            <div className={`tnum tiny ${optionalClass}`} style={{ marginTop: 4 }}>
-              {paceLine}
-            </div>
+            {/* Pace projects HOUSEHOLD spending against a household target, so
+                it says nothing about one person and is withdrawn rather than
+                recomputed when a chip is held down. */}
+            {!filtered && (
+              <div className={`tnum tiny ${optionalClass}`} style={{ marginTop: 4 }}>
+                {paceLine}
+              </div>
+            )}
             {/* The one per-person figure beside a bar, and it carries its own
                 denominator. "$604 of the $1,044 spent" is true; "$604 of
                 $1,117" would measure one person against a target the whole
@@ -625,7 +712,7 @@ export default function Spending() {
             )}
             {openBucket === 'optional' && (
               <SpendingBucketRows
-                rows={rowsIn.get('optional') ?? []}
+                rows={rowsInView.get('optional') ?? []}
                 nameOf={nameOf}
                 emptyNote="Nothing discretionary this month."
                 onChanged={refresh}
@@ -639,19 +726,32 @@ export default function Spending() {
           <div style={{ marginBottom: 16 }}>
             <BucketHeader
               label="Fixed"
-              count={(rowsIn.get('fixed') ?? []).length}
+              count={(rowsInView.get('fixed') ?? []).length}
               open={openBucket === 'fixed'}
               onToggle={() => setOpenBucket((c) => (c === 'fixed' ? null : 'fixed'))}
               right={
                 <span className="tnum muted">
-                  {money(fixedSpent)} / {money(fixedTarget)}
+                  {filtered
+                    ? `${money(fixedShown)} of ${money(fixedSpent)}`
+                    : `${money(fixedSpent)} / ${money(fixedTarget)}`}
                 </span>
               }
             />
-            <Bar pct={fixedTarget > 0 ? fixedSpent / fixedTarget : 0} color="var(--steel)" />
+            <Bar
+              pct={
+                filtered
+                  ? fixedSpent > 0
+                    ? fixedShown / fixedSpent
+                    : 0
+                  : fixedTarget > 0
+                    ? fixedSpent / fixedTarget
+                    : 0
+              }
+              color="var(--steel)"
+            />
             {openBucket === 'fixed' && (
               <SpendingBucketRows
-                rows={rowsIn.get('fixed') ?? []}
+                rows={rowsInView.get('fixed') ?? []}
                 nameOf={nameOf}
                 emptyNote="Nothing committed has gone out yet this month."
                 onChanged={refresh}
@@ -663,7 +763,7 @@ export default function Spending() {
           <div style={{ marginBottom: 16 }}>
             <BucketHeader
               label="Attack fund"
-              count={(rowsIn.get('attack') ?? []).length}
+              count={(rowsInView.get('attack') ?? []).length}
               open={openBucket === 'attack'}
               onToggle={() => setOpenBucket((c) => (c === 'attack' ? null : 'attack'))}
               right={
@@ -671,15 +771,29 @@ export default function Spending() {
                   className={attackMet ? 'tnum is-good' : 'tnum muted'}
                   style={attackMet ? { fontWeight: 700 } : undefined}
                 >
-                  {money(attackSpent)} sent
+                  {filtered
+                    ? `${money(attackShown)} of ${money(attackSpent)}`
+                    : `${money(attackSpent)} sent`}
                 </span>
               }
             />
+            {/* Filtered, the bar is a share of what the household sent and the
+                green "met" reading comes off: the attack fund is one household
+                obligation, and no individual is on the hook for a portion of
+                it that anyone has written down. */}
             <Bar
-              pct={attackTarget > 0 ? attackSpent / attackTarget : 0}
-              color={attackMet ? 'var(--green)' : 'var(--steel)'}
+              pct={
+                filtered
+                  ? attackSpent > 0
+                    ? attackShown / attackSpent
+                    : 0
+                  : attackTarget > 0
+                    ? attackSpent / attackTarget
+                    : 0
+              }
+              color={!filtered && attackMet ? 'var(--green)' : 'var(--steel)'}
             />
-            {hasTransactions && !attackMet && attackTarget > 0 && (
+            {!filtered && hasTransactions && !attackMet && attackTarget > 0 && (
               <div
                 className={`tnum tiny ${day > ATTACK_DUE_DAY ? 'is-bad' : 'muted'}`}
                 style={{ marginTop: 4 }}
@@ -690,7 +804,7 @@ export default function Spending() {
             )}
             {openBucket === 'attack' && (
               <SpendingBucketRows
-                rows={rowsIn.get('attack') ?? []}
+                rows={rowsInView.get('attack') ?? []}
                 nameOf={nameOf}
                 emptyNote="Nothing has reached the current target this month."
                 onChanged={refresh}
@@ -702,30 +816,43 @@ export default function Spending() {
           <div style={{ marginBottom: 16 }}>
             <BucketHeader
               label="Savings"
-              count={(rowsIn.get('savings') ?? []).length}
+              count={(rowsInView.get('savings') ?? []).length}
               open={openBucket === 'savings'}
               onToggle={() => setOpenBucket((c) => (c === 'savings' ? null : 'savings'))}
               right={
                 <span
-                  className={savingsMet ? 'tnum is-good' : 'tnum muted'}
-                  style={savingsMet ? { fontWeight: 700 } : undefined}
+                  className={!filtered && savingsMet ? 'tnum is-good' : 'tnum muted'}
+                  style={!filtered && savingsMet ? { fontWeight: 700 } : undefined}
                 >
-                  {money(savingsSpent)} sent
+                  {filtered
+                    ? `${money(savingsShown)} of ${money(savingsSpent)}`
+                    : `${money(savingsSpent)} sent`}
                 </span>
               }
             />
+            {/* Same as the attack fund: the monthly deposit is one household
+                commitment, so a person's share of it is worth showing and a
+                per-person "met" is not a thing that exists. */}
             <Bar
-              pct={savingsTarget > 0 ? savingsSpent / savingsTarget : 0}
-              color={savingsMet ? 'var(--green)' : 'var(--steel)'}
+              pct={
+                filtered
+                  ? savingsSpent > 0
+                    ? savingsShown / savingsSpent
+                    : 0
+                  : savingsTarget > 0
+                    ? savingsSpent / savingsTarget
+                    : 0
+              }
+              color={!filtered && savingsMet ? 'var(--green)' : 'var(--steel)'}
             />
-            {hasTransactions && !savingsMet && savingsTarget > 0 && (
+            {!filtered && hasTransactions && !savingsMet && savingsTarget > 0 && (
               <div className="tnum tiny muted" style={{ marginTop: 4 }}>
                 {money(gap(savingsTarget, savingsSpent))} short of {money(savingsTarget)}
               </div>
             )}
             {openBucket === 'savings' && (
               <SpendingBucketRows
-                rows={rowsIn.get('savings') ?? []}
+                rows={rowsInView.get('savings') ?? []}
                 nameOf={nameOf}
                 emptyNote="Nothing has moved to savings this month."
                 onChanged={refresh}
@@ -749,11 +876,12 @@ export default function Spending() {
 
           {filtered && (
             <div className="rule">
-              The bars above, their rows, the pace and the six-month history are the whole
-              household. Targets are
-              budgeted for the household and there is no per-person one, so {ownerLabel(ownerFilter)}
-              {"'s"} spending is reported as a share of what was spent rather than against a
-              target. The tables narrow; the bars do not.
+              The bars, the rows behind them and the tables all show{' '}
+              {ownerLabel(ownerFilter)}
+              {"'s"} spending, stated as a share of what the household spent. Targets are
+              budgeted for the household and there is no per-person one, so no target, pace
+              or met figure is shown while a person is selected. The six-month history stays
+              household, since it reports months rather than people.
             </div>
           )}
 

@@ -12,8 +12,12 @@ import Recategorizer, { bucketStyle, type MoveNotice } from './Recategorizer'
  * instead of groceries, and nothing in a day-by-day list would ever have made
  * that visible — each row looked unremarkable, and the pattern was the problem.
  *
- * Every group sorts by total, largest first, because the whole purpose is to put
- * the biggest thing at the top.
+ * The GROUPS sort by total, largest first, because the whole purpose of grouping
+ * is to put the biggest thing at the top. The ROWS inside a group sort by date
+ * posted, newest first, matching the ungrouped list: grouping changes which
+ * charges sit together, not what order a ledger runs in, and a reader checking
+ * "what did we spend there recently" was being handed the largest charge of the
+ * month instead of the latest.
  */
 
 export type GroupBy = 'merchant' | 'line' | 'account'
@@ -76,7 +80,13 @@ export default function GroupedActivity({
       map.set(key, g)
     }
 
-    for (const g of map.values()) g.rows.sort((a, b) => b.amount - a.amount)
+    // Newest first, by the date the charge posted. ISO dates compare correctly
+    // as strings, and amount is the tie-break so a day with several charges
+    // still leads with the one that moved the most.
+    for (const g of map.values())
+      g.rows.sort((a, b) =>
+        a.posted_on === b.posted_on ? b.amount - a.amount : a.posted_on < b.posted_on ? 1 : -1,
+      )
     return [...map.values()].sort((a, b) => b.total - a.total)
   }, [rows, groupBy, accounts, budgetLines])
 

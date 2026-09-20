@@ -184,6 +184,75 @@ export function daysUntil(iso: string | null): number | null {
   )
 }
 
+export interface DueStatus {
+  /** "due in 3 days", "due today", "5 days overdue", "paid $119 on 15 Sep". */
+  label: string | null
+  /** Overdue, or due within two days. The only thing that earns red. */
+  urgent: boolean
+  /** A payment is on record on or after the due date. */
+  settled: boolean
+}
+
+/**
+ * Whether a debt's next instalment is outstanding, and what to say about it.
+ *
+ * The due date ALONE cannot answer this. `next_due_on` is the date the issuer
+ * last published, and it only advances when the next statement cuts, so an
+ * account paid on its due date keeps that date for days or weeks afterwards.
+ * Reading it on its own reports a bill as late for having been paid on time,
+ * which is what a card paid on the 15th did: it read "5 days overdue" on the
+ * 20th while being current.
+ *
+ * So a payment dated on or after the due date withdraws the late claim. Only
+ * that claim: the payment is then stated with its amount and its date rather
+ * than being summarised as "paid", because a part payment is also a payment on
+ * record and this page is not entitled to decide whether it was enough. The
+ * reader can see $119 against a $119 minimum and judge; they cannot see
+ * anything at all if the line just says the bill is late.
+ *
+ * ISO dates compare correctly as strings, which is why they are not parsed
+ * here: parsing both to Date and comparing would reintroduce the timezone
+ * question these columns exist to avoid.
+ *
+ * A debt with no due date on record returns a null label and is never urgent.
+ * Nothing known is not the same as nothing owed, and the callers say "terms"
+ * rather than going quiet.
+ */
+export function dueStatus(debt: {
+  next_due_on: string | null
+  last_payment_on?: string | null
+  last_payment_amount?: number | null
+}): DueStatus {
+  const due = debt.next_due_on
+  if (!due) return { label: null, urgent: false, settled: false }
+
+  const paid = debt.last_payment_on ?? null
+  if (paid && paid >= due) {
+    const amount =
+      typeof debt.last_payment_amount === 'number' && debt.last_payment_amount > 0
+        ? `${money(debt.last_payment_amount)} `
+        : ''
+    return {
+      label: `paid ${amount}on ${shortDay(paid)}`,
+      urgent: false,
+      settled: true,
+    }
+  }
+
+  const days = daysUntil(due)
+  return {
+    label: dueLabel(due),
+    urgent: days !== null && days <= 2,
+    settled: false,
+  }
+}
+
+/** "15 Sep", for stating when something happened. */
+function shortDay(iso: string): string {
+  const [, m, d] = iso.split('-').map(Number)
+  return `${d} ${MONTH_NAMES[m - 1]?.slice(0, 3) ?? ''}`.trim()
+}
+
 /** "due in 3 days" / "due today" / "6 days overdue". Null when nothing is known. */
 export function dueLabel(iso: string | null): string | null {
   if (!iso) return null

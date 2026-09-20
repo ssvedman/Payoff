@@ -13,7 +13,7 @@ import {
   accountLabel,
   relativeTime,
   rateLabel,
-  dueLabel,
+  dueStatus,
   ownerLabel,
   parseDateOnly,
   signedAmount,
@@ -1225,8 +1225,12 @@ function EditTerms({ account, onSaved }: { account: Account; onSaved: () => void
       >
         {/* The due date has no column of its own in the new table, so the control
             that sets it carries it, and a debt with nothing on record says so
-            rather than going quiet. */}
-        {dueLabel(account.next_due_on) ?? 'terms'}
+            rather than going quiet.
+
+            dueStatus rather than dueLabel: an account paid on its due date keeps
+            that date until the next statement cuts, so the raw date reads as
+            overdue for having been paid on time. */}
+        {dueStatus(account).label ?? 'terms'}
       </button>
     )
   }
