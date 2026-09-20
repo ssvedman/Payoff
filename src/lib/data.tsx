@@ -2,9 +2,18 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { supabase } from './supabase'
 import { useAuth } from './auth'
 import { isoDate } from './format'
-import { currentTarget, inAvalancheOrder, monthlyPool, round2, simulate, type SimDebt } from './avalanche'
+import {
+  currentTarget,
+  inAvalancheOrder,
+  monthlyPool,
+  round2,
+  simulate,
+  simulateMinimumsOnly,
+  type SimDebt,
+} from './avalanche'
 import type {
   AccountRow,
+  AssetRow,
   BudgetLineRow,
   MerchantRuleRow,
   NotificationPrefRow,
@@ -29,6 +38,11 @@ export interface Account extends Omit<AccountRow, 'apr' | 'minimum_payment' | 'o
   balanceSource: string | null
   enteredBy: string | null
   balanceUpdatedAt: string | null
+}
+
+/** numeric arrives as the string "31000.00"; coerce at the boundary. */
+export interface Asset extends Omit<AssetRow, 'estimated_value'> {
+  estimated_value: number
 }
 
 export interface Transaction extends Omit<TransactionRow, 'amount'> {
@@ -86,11 +100,46 @@ interface DataState {
   loading: boolean
   error: string | null
   accounts: Account[]
-  /** The nine debts, avalanche-ordered. Excludes savings. */
+  /** Every debt, avalanche-ordered. Excludes savings and checking. */
   debts: Account[]
   savings: Account | null
-  /** Checking accounts — spending sources, never part of the payoff queue. */
+  /**
+   * HOUSEHOLD checking accounts — spending sources, never part of the payoff
+   * queue. The business's 5star checking is excluded: it used to be in here,
+   * and seeding a household cash projection from it would have added $3,347.13
+   * of the business's money to the household's, which is roughly the size of
+   * the shortfall such a projection exists to catch.
+   */
   checking: Account[]
+  /**
+   * Every savings account. `savings` above is a single row — the deposit-target
+   * account Home's panel means — so it is not a cash total: there are two live
+   * and using it drops one of them silently.
+   */
+  savingsAccounts: Account[]
+  /** The business's own accounts, for the Business view. */
+  businessAccounts: Account[]
+  /** Vehicles and anything else owned outright or against a loan. */
+  assets: Asset[]
+  /**
+   * Set when the assets read itself failed, as opposed to there being none.
+   *
+   * The two are otherwise indistinguishable — both leave `assets` empty — and
+   * they mean opposite things. Without this, a dropped request made net worth
+   * render as −$116,090 instead of −$52,348, and the vehicles table said "No
+   * vehicles on record" about four vehicles that are on record.
+   */
+  assetsError: string | null
+  /**
+   * Set when the account_progress read failed.
+   *
+   * usePayoffPlan falls back to opening_balance for any account with no progress
+   * row, which is right for a genuinely new account and badly wrong for all of
+   * them at once: the peaks total $149,565.63 against $120,897.51 of opening
+   * figures, so a failed read turns "$28,827 cleared, 19.3%" into "$159 cleared,
+   * 0.13%" with no sign anything is missing.
+   */
+  progressError: string | null
   /**
    * This month's HOUSEHOLD transactions. Business is already excluded, so no
    * consumer has to remember to exclude it — a total computed from this is
@@ -152,6 +201,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
     debts: [],
     savings: null,
     checking: [],
+    savingsAccounts: [],
+    businessAccounts: [],
+    assets: [],
+    assetsError: null,
+    progressError: null,
     businessAccountIds: new Set<string>(),
     transactions: [],
     allTransactions: [],
@@ -187,6 +241,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       membersRes,
       itemsRes,
       acctProgRes,
+      assetsRes,
     ] = await Promise.all([
       supabase.from('accounts').select('*').order('payoff_order'),
       supabase.from('account_balance_current').select('*'),
@@ -209,6 +264,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       // "not synced yet".
       supabase.from('plaid_sync_status').select('last_synced, status, institution'),
       supabase.from('account_progress').select('*'),
+      supabase.from('assets').select('*').order('estimated_value', { ascending: false }),
     ])
 
     const firstError =
@@ -258,7 +314,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
       .sort()
       .pop() as string | null
 
-    const businessAccountIds = new Set(accounts.filter((a) => a.is_business).map((a) => a.id))
+    const businessAccounts = accounts.filter((a) => a.is_business)
+    const businessAccountIds = new Set(businessAccounts.map((a) => a.id))
 
     const allTransactions = (txnRes.data ?? []).map((t: Record<string, unknown>) => ({
       ...(t as unknown as TransactionRow),
@@ -271,7 +328,19 @@ export function DataProvider({ children }: { children: ReactNode }) {
       accounts,
       debts,
       savings: accounts.find((a) => a.kind === 'savings') ?? null,
-      checking: accounts.filter((a) => a.kind === 'checking'),
+      checking: accounts.filter((a) => a.kind === 'checking' && !a.is_business),
+      savingsAccounts: accounts.filter((a) => a.kind === 'savings' && !a.is_business),
+      businessAccounts,
+      // A failed assets read must not blank the app, so it stays out of the
+      // firstError chain: net worth is one panel, not the payoff plan. It is
+      // reported on its own channel instead, because silence here reads as
+      // "no assets", which is a different and much more confident claim.
+      assets: (assetsRes.data ?? []).map((r: Record<string, unknown>) => ({
+        ...(r as unknown as AssetRow),
+        estimated_value: num(r.estimated_value),
+      })),
+      assetsError: assetsRes.error?.message ?? null,
+      progressError: acctProgRes.error?.message ?? null,
       businessAccountIds,
       allTransactions,
       transactions: allTransactions.filter((t) => !isBusinessTxn(t, businessAccountIds)),
@@ -375,6 +444,13 @@ export function usePayoffPlan() {
     const sim = simulate(simDebts, plan.attack_fund)
 
     /**
+     * The counterfactual the Progress tab measures the plan against: every debt
+     * pays its own minimum forever and nothing is ever redirected. Run over the
+     * SAME simDebts array as the plan, so the two lines start from one total.
+     */
+    const noRollSim = simulateMinimumsOnly(simDebts)
+
+    /**
      * What goes out to debt each month: every minimum plus the attack fund.
      *
      * Taken from the simulation's own pool rather than re-added here, so the
@@ -395,6 +471,7 @@ export function usePayoffPlan() {
       progress: openingTotal > 0 ? cleared / openingTotal : 0,
       target,
       sim,
+      noRollSim,
       savingsBalance: savings?.balance ?? 0,
       depositTarget: plan.deposit_target,
       monthlySavings: plan.monthly_savings,
@@ -405,6 +482,81 @@ export function usePayoffPlan() {
       planStartedOn: plan.plan_started_on,
     }
   }, [debts, plan, savings, progress])
+}
+
+/** One asset with the loan held against it resolved. */
+export interface AssetEquity {
+  asset: Asset
+  /** The securing loan, or null when the asset is owned outright. */
+  loan: Account | null
+  /** Balance still owed on that loan. 0 when owned outright. */
+  owedOn: number
+  /** value − owed. Negative means underwater. */
+  equity: number
+}
+
+/**
+ * Net worth: everything owned, less everything owed.
+ *
+ * Debt alone only ever looks bad, and the figure this returns is negative today.
+ * That is the point — it climbs every month as debt falls, which the debt total
+ * on its own never conveys.
+ *
+ * Business money is counted on BOTH sides, because the debt total already
+ * includes the business's Amazon Business card. Counting its card but not its
+ * cash would overstate what is owed by the size of the balance sitting in the
+ * business account. This is a balance sheet, not a household budget: the rule
+ * that business data stays out of bucket maths is about `transactions`, and
+ * nothing here touches a bucket.
+ *
+ * Debt is summed from the account rows by kind rather than from plan.totalOwed,
+ * which counts only debts that are not cleared — and `cleared` is true whenever
+ * cleared_at is set, even with a balance still on the account. Such a debt would
+ * vanish from net worth while still being owed.
+ */
+export function useNetWorth() {
+  const { accounts, assets } = useData()
+
+  return useMemo(() => {
+    const byId = new Map(accounts.map((a) => [a.id, a]))
+
+    const assetRows: AssetEquity[] = assets.map((asset) => {
+      // Matched by uuid. The truck's loan is "Truck — Issuer", with an em
+      // dash, and any name match against it reports the vehicle as owned outright.
+      const loan = asset.secured_by ? byId.get(asset.secured_by) ?? null : null
+      const owedOn = loan ? Math.max(0, loan.balance) : 0
+      return {
+        asset,
+        loan,
+        owedOn,
+        equity: round2(asset.estimated_value - owedOn),
+      }
+    })
+
+    const assetsTotal = round2(assets.reduce((s, a) => s + a.estimated_value, 0))
+
+    const cashAccounts = accounts.filter((a) => a.kind === 'checking' || a.kind === 'savings')
+    const cashTotal = round2(cashAccounts.reduce((s, a) => s + a.balance, 0))
+    const businessCash = round2(
+      cashAccounts.filter((a) => a.is_business).reduce((s, a) => s + a.balance, 0),
+    )
+
+    const debtAccounts = accounts.filter((a) => a.kind !== 'checking' && a.kind !== 'savings')
+    const debtTotal = round2(
+      debtAccounts.reduce((s, a) => s + Math.max(0, a.balance), 0),
+    )
+
+    return {
+      assetRows,
+      assetsTotal,
+      cashTotal,
+      businessCash,
+      debtTotal,
+      netWorth: round2(assetsTotal + cashTotal - debtTotal),
+      /** True once there is anything to show; an empty assets table is not an error. */
+      hasAssets: assets.length > 0,
+    }
+  }, [accounts, assets])
 }
 
 /**

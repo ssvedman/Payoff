@@ -306,7 +306,10 @@ export default function Settings() {
   const pushOn = PUSH_SUPPORTED && subscribed === true
 
   return (
-    <div className="page">
+    // page--narrow: this page stays a single narrow column on a wide screen.
+    // Every row is a label at one edge and a 40px switch at the other, and
+    // across 1036px that is not a row anybody can read across.
+    <div className="page page--narrow">
       <div style={{ fontWeight: 700, fontSize: 20, marginBottom: 16 }}>Settings</div>
 
       {/* Push enablement, this device only */}

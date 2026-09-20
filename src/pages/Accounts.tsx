@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useData, type Account } from '../lib/data'
+import AssetsTable from '../components/AssetsTable'
 import { useAuth } from '../lib/auth'
 import { supabase } from '../lib/supabase'
 import { isoDate, money, moneyCents, minimum, accountLabel, relativeTime, rateLabel, dueLabel, ownerLabel } from '../lib/format'
@@ -10,7 +11,7 @@ import { isoDate, money, moneyCents, minimum, accountLabel, relativeTime, rateLa
  *
  * Synced accounts are read-only. Manual accounts carry an inline input and one
  * save button. Non-negotiable #5: there is no bank-linking UI here, and never
- * will be — the nine debts plus savings are seeded once.
+ * will be — the debts plus savings are seeded once.
  *
  * Rates, minimums and payoff order are fixed in the seed. Only balances move.
  */
@@ -68,13 +69,18 @@ export default function Accounts() {
    * the intent was, and calling it synced implies a live balance that does not
    * exist.
    */
-  const debtsConnected = useMemo(
-    () => accounts.filter((a) => isDebt(a) && a.plaid_account_id).sort(byPayoffOrder),
-    [accounts],
-  )
-
-  const debtsTyped = useMemo(
-    () => accounts.filter((a) => isDebt(a) && !a.plaid_account_id).sort(byPayoffOrder),
+  /**
+   * Every debt in payoff order, synced and typed-in together.
+   *
+   * These were two separate tables — CONNECTED above, TYPED IN below — which
+   * split the payoff queue in half by an implementation detail: whether a bank
+   * feed happens to reach the account. The queue is ordered by rate, and reading
+   * it in that order meant reading down two tables and merging them by eye. One
+   * table, ordered the way the plan is ordered; each row says for itself whether
+   * its figure is synced or typed, and only a typed one carries an input.
+   */
+  const debts = useMemo(
+    () => accounts.filter((a) => isDebt(a)).sort(byPayoffOrder),
     [accounts],
   )
 
@@ -200,7 +206,7 @@ export default function Accounts() {
   /**
    * The owner now leads the account name, so it is not repeated here. The type
    * label leads instead: "Auto loan" answers the first question a reader has when
-   * scanning a list of nine debts, which the rate alone does not. The issuing bank
+   * scanning a list of a dozen debts, which the rate alone does not. The issuing bank
    * follows it, because two "Credit card" rows are only tellable apart by who
    * issued them — and where even that is not enough (this household holds two
    * cards from one issuer sharing a nickname), the bank's own last four is.
@@ -223,6 +229,87 @@ export default function Accounts() {
     }
     parts.push(a.balanceUpdatedAt ? `updated ${relativeTime(a.balanceUpdatedAt)}` : 'no update yet')
     return parts.filter(Boolean).join(' · ')
+  }
+
+  /**
+   * The sub-line for the wide table, where the rate, the minimum and the next
+   * due date each have a column of their own and repeating them under the name
+   * would print every one of them twice.
+   *
+   * What it keeps is the one thing the three section headings used to say and
+   * the columns cannot: whether this balance came from a bank or from somebody
+   * typing it in. Two accounts now sit in one list with very different claims
+   * behind their figures, and an unqualified number implies the stronger one.
+   */
+  function wideSub(a: Account) {
+    const parts: (string | null)[] = [a.type_label, instMask(a), businessNote(a)]
+    if (a.kind === 'savings' && plan) parts.push(`target ${money(plan.deposit_target)}`)
+    parts.push(
+      a.plaid_account_id
+        ? 'synced'
+        : a.balanceUpdatedAt
+          ? `typed in, updated ${relativeTime(a.balanceUpdatedAt)}`
+          : 'typed in, no update yet',
+    )
+    return parts.filter(Boolean).join(' · ')
+  }
+
+  /**
+   * One row of the single accounts table.
+   *
+   * The rate, minimum and due-date cells are dropped below 1024px rather than
+   * squeezed: on a phone the sub-line above carries exactly the same facts, and
+   * five columns across 376px would truncate the account name, which is the one
+   * thing the row cannot do without.
+   */
+  function accountRow(a: Account) {
+    const debt = isDebt(a)
+    const synced = Boolean(a.plaid_account_id)
+    const isClear = debt && (a.balance <= 0 || Boolean(a.cleared_at))
+
+    return (
+      <tr key={a.id}>
+        <td>
+          <div className="sm" style={{ fontWeight: 600 }}>
+            {accountLabel(a)}
+          </div>
+          <div className="tiny muted tnum acct-sub-mobile">
+            {synced ? syncedSub(a) : manualSub(a)}
+          </div>
+          <div className="tiny muted tnum acct-sub-wide">{wideSub(a)}</div>
+          {debt && <EditTerms account={a} onSaved={refresh} />}
+        </td>
+
+        <td className="acct-col tnum tiny muted" style={{ textAlign: 'right' }}>
+          {debt ? rateLabel(a) : ''}
+        </td>
+
+        <td className="acct-col tnum tiny muted" style={{ textAlign: 'right' }}>
+          {debt ? minimum(a.minimum_payment) : ''}
+        </td>
+
+        <td style={{ textAlign: 'right' }}>
+          {synced ? (
+            <span className="tnum sm" style={isClear ? { color: 'var(--green)' } : undefined}>
+              {isClear ? 'cleared' : moneyCents(a.balance)}
+            </span>
+          ) : (
+            <input
+              className="tnum"
+              style={{ width: 104, padding: '7px 9px', fontSize: 13, textAlign: 'right' }}
+              inputMode="decimal"
+              aria-label={`${accountLabel(a)} balance`}
+              value={values[a.id] ?? ''}
+              onChange={(e) => setValue(a.id, e.target.value)}
+            />
+          )}
+        </td>
+
+        <td className="acct-col tnum tiny muted" style={{ textAlign: 'right' }}>
+          {debt ? (dueLabel(a.next_due_on) ?? '') : ''}
+        </td>
+      </tr>
+    )
   }
 
   const lastSavedBy = lastManual?.enteredBy ? memberNames[lastManual.enteredBy] : undefined
@@ -254,7 +341,9 @@ export default function Accounts() {
         which is indistinguishable from missing to anyone trying to add an
         account. There is no nav entry for /link, so this IS the entry point.
       */}
-      <div className="card-panel" style={{ marginBottom: 20 }}>
+      {/* Capped at desktop: a form is not more usable at 1036px, it is just a
+          longer distance between a label and the field it belongs to. */}
+      <div className="card-panel dk-panel-cap" style={{ marginBottom: 20 }}>
         <div className="sm" style={{ fontWeight: 700, marginBottom: 3 }}>
           Add an account
         </div>
@@ -296,127 +385,72 @@ export default function Accounts() {
 
       {showSkeleton ? (
         <>
+          {/* The same shape the loaded table has: a debts group, a bank accounts
+              group, the save button, then vehicles. */}
           <div className="skeleton" style={{ width: 96, height: 10, marginBottom: 10 }} />
-          <SkeletonRows count={4} />
+          <SkeletonRows count={8} />
           <div className="skeleton" style={{ width: 96, height: 10, margin: '20px 0 10px' }} />
           <SkeletonRows count={3} />
           <div className="skeleton" style={{ height: 46, marginTop: 16 }} />
+          {/* Vehicles, which land below the save button. Without these the page
+              grew by a whole section the moment the rows arrived. */}
+          <div className="skeleton" style={{ width: 96, height: 10, margin: '20px 0 10px' }} />
+          <SkeletonRows count={4} />
         </>
       ) : (
         <>
-          <div className="tiny muted" style={{ fontWeight: 700, marginBottom: 4 }}>
-            DEBTS · CONNECTED
-          </div>
-          {debtsConnected.length === 0 ? (
-            <div className="tiny muted" style={{ padding: '10px 0' }}>
-              No debts are connected to a bank yet.
-            </div>
-          ) : (
-            <table>
-              <tbody>
-                {debtsConnected.map((a) => {
-                  const isClear = a.balance <= 0 || Boolean(a.cleared_at)
-                  return (
-                    <tr key={a.id}>
-                      <td>
-                        <div className="sm" style={{ fontWeight: 600 }}>
-                          {accountLabel(a)}
-                        </div>
-                        <div className="tiny muted tnum">{syncedSub(a)}</div>
-                        <EditTerms account={a} onSaved={refresh} />
-                      </td>
-                      <td
-                        className="tnum sm"
-                        style={{ textAlign: 'right', color: isClear ? 'var(--green)' : undefined }}
-                      >
-                        {isClear ? 'cleared' : moneyCents(a.balance)}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          )}
+          {/*
+            ONE table, five columns. The two groups keep their own heading rows
+            because the distinction they draw is real and load-bearing — a bank
+            account is not owed to anybody and is not in the payoff queue — but
+            they are rows inside this table now, not three tables in a stack with
+            three sets of column widths that never line up.
+          */}
+          <table>
+            <thead className="acct-head">
+              <tr className="caps">
+                <th>Account</th>
+                <th className="r">Rate</th>
+                <th className="r">Minimum</th>
+                <th className="r">Balance</th>
+                <th className="r">Next due</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="acct-group">
+                <td colSpan={5} className="caps" style={{ paddingTop: 10 }}>
+                  DEBTS
+                </td>
+              </tr>
+              {debts.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="tiny muted">
+                    No debts on record.
+                  </td>
+                </tr>
+              ) : (
+                debts.map(accountRow)
+              )}
 
-          <div className="tiny muted" style={{ fontWeight: 700, margin: '20px 0 4px' }}>
-            DEBTS · TYPED IN
-          </div>
-          {debtsTyped.length === 0 ? (
-            <div className="tiny muted" style={{ padding: '10px 0' }}>
-              Every debt is connected.
-            </div>
-          ) : (
-            <table>
-              <tbody>
-                {debtsTyped.map((a) => (
-                  <tr key={a.id}>
-                    <td>
-                      <div className="sm" style={{ fontWeight: 600 }}>
-                        {accountLabel(a)}
-                      </div>
-                      <div className="tiny muted tnum">{manualSub(a)}</div>
-                      <EditTerms account={a} onSaved={refresh} />
-                    </td>
-                    <td style={{ textAlign: 'right' }}>
-                      <input
-                        className="tnum"
-                        style={{ width: 104, padding: '7px 9px', fontSize: 13, textAlign: 'right' }}
-                        inputMode="decimal"
-                        aria-label={`${accountLabel(a)} balance`}
-                        value={values[a.id] ?? ''}
-                        onChange={(e) => setValue(a.id, e.target.value)}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-
-          <div className="tiny muted" style={{ fontWeight: 700, margin: '20px 0 4px' }}>
-            BANK ACCOUNTS
-          </div>
-          <div className="tiny muted" style={{ marginBottom: 6, lineHeight: 1.5 }}>
-            Where money sits and is spent from. Not part of the payoff queue.
-          </div>
-          {banks.length === 0 ? (
-            <div className="tiny muted" style={{ padding: '10px 0' }}>
-              No bank accounts connected.
-            </div>
-          ) : (
-            <table>
-              <tbody>
-                {banks.map((a) => (
-                  <tr key={a.id}>
-                    <td>
-                      <div className="sm" style={{ fontWeight: 600 }}>
-                        {accountLabel(a)}
-                      </div>
-                      <div className="tiny muted tnum">
-                        {a.plaid_account_id ? syncedSub(a) : manualSub(a)}
-                      </div>
-                    </td>
-                    {a.plaid_account_id ? (
-                      <td className="tnum sm" style={{ textAlign: 'right' }}>
-                        {moneyCents(a.balance)}
-                      </td>
-                    ) : (
-                      <td style={{ textAlign: 'right' }}>
-                        <input
-                          className="tnum"
-                          style={{ width: 104, padding: '7px 9px', fontSize: 13, textAlign: 'right' }}
-                          inputMode="decimal"
-                          aria-label={`${accountLabel(a)} balance`}
-                          value={values[a.id] ?? ''}
-                          onChange={(e) => setValue(a.id, e.target.value)}
-                        />
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+              <tr className="acct-group">
+                <td colSpan={5}>
+                  <div className="caps">BANK ACCOUNTS</div>
+                  <div className="tiny muted" style={{ lineHeight: 1.5 }}>
+                    Where money sits and is spent from. Not part of the payoff queue.
+                  </div>
+                </td>
+              </tr>
+              {banks.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="tiny muted">
+                    No bank accounts connected.
+                  </td>
+                </tr>
+              ) : (
+                banks.map(accountRow)
+              )}
+            </tbody>
+          </table>
 
           {manual.length > 0 && (
             <>
@@ -447,6 +481,17 @@ export default function Accounts() {
             </>
           )}
 
+          {/*
+            AFTER the save button, deliberately, and outside the block that owns
+            it. Everything above is one input form: three tables of accounts
+            whose typed balances are collected in `values`/`seed` and written as
+            balance snapshots by that one button. An asset has no snapshot row —
+            it is edited and saved on its own line — so putting it among those
+            tables would file it under a button labelled "Save balances" that
+            could never save it. It renders whether or not there is a manual
+            account, which is why it sits outside that conditional too.
+          */}
+          <AssetsTable onSaved={refresh} />
         </>
       )}
     </div>

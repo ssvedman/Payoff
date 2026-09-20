@@ -322,7 +322,7 @@ export function categorize(a: CategorizeArgs): { bucket: Bucket; source: 'auto' 
     // own debts is either the attack payment or an ordinary minimum.
     if (looksLikePayment(haystack, a.plaidCategory)) {
       // Only the CURRENT TARGET receives the attack fund. plan_settings.attack_fund
-      // is the surplus ABOVE the minimums, and the nine minimums are budgeted under
+      // is the surplus ABOVE the minimums, and every minimum is budgeted under
       // the 'fixed' line "Debt minimums" — so bucketing every debt payment as
       // 'attack' would both inflate the attack total past its target (silencing the
       // attack_missing alert, the one alert whose job is to catch a missed payment)

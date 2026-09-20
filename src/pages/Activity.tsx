@@ -5,9 +5,14 @@ import MoveNoticeBar from '../components/MoveNoticeBar'
 import GroupedActivity, { GROUPINGS, type GroupBy } from '../components/GroupedActivity'
 import { useData, isBusinessTxn, type Transaction } from '../lib/data'
 import { MonthNav, useMonthView } from '../lib/monthView'
-import { accountDescriptor, dayHeading, signedMoney, MONTH_NAMES } from '../lib/format'
+import { accountDescriptor, dayHeading, parseDateOnly, signedMoney, MONTH_NAMES } from '../lib/format'
 
 type Filter = 'all' | 'review' | 'optional'
+
+/** "19 Sep" — the date column, which only appears where there is room for it. */
+function shortDate(iso: string): string {
+  return parseDateOnly(iso).toLocaleDateString('en-US', { day: 'numeric', month: 'short' })
+}
 
 const FILTERS: { key: Filter; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -334,29 +339,66 @@ export default function Activity() {
           }}
         />
       ) : (
-        days.map((day, di) => (
-          <div key={day.date}>
-            <div
-              className="tiny muted tnum"
-              style={{ fontWeight: 700, margin: di === 0 ? '0 0 6px' : '16px 0 6px' }}
-            >
-              {dayHeading(day.date)}
-            </div>
-            <table>
-              <tbody>
+        /*
+          ONE table, five columns: date, merchant, account, label, amount.
+          It was a table per day, each row carrying three cells with the date
+          above it and the account tucked under the merchant. At 1100px that is a
+          card stack with borders; as a table the same facts line up in columns
+          and the amounts read down a single edge.
+
+          The date and account columns are hidden below 1024px, where the day
+          heading row and the merchant's sub-line say the same thing in the space
+          a phone has. Nothing is added or dropped — it moves.
+        */
+        <table>
+          <thead className="act-head">
+            <tr className="caps">
+              <th>Date</th>
+              <th>Merchant</th>
+              <th>Account</th>
+              <th className="r">Label</th>
+              <th className="r">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {days.map((day, di) => (
+              <Fragment key={day.date}>
+                {/* A bare <div> sitting between table rows is hoisted clean out
+                    of the table by every browser, so the day heading is a real
+                    row spanning all five columns. It is hidden at desktop, where
+                    the date column carries it. */}
+                <tr className="act-daybreak">
+                  <td
+                    colSpan={5}
+                    className="tiny muted tnum"
+                    style={{
+                      fontWeight: 700,
+                      padding: di === 0 ? '0 0 6px' : '16px 0 6px',
+                      borderBottom: 'none',
+                    }}
+                  >
+                    {dayHeading(day.date)}
+                  </td>
+                </tr>
+
                 {day.rows.map((t) => {
                   const pill = bucketStyle(t.bucket)
                   const open = openId === t.id
-                  const sub = t.pending ? `${accountName(t.account_id)} · pending` : accountName(t.account_id)
+                  const account = accountName(t.account_id)
+                  const sub = t.pending ? `${account} · pending` : account
                   return (
                     <Fragment key={t.id}>
                       <tr>
+                        <td className="act-date tiny muted tnum" style={{ width: 76, whiteSpace: 'nowrap' }}>
+                          {shortDate(t.posted_on)}
+                        </td>
                         <td>
                           <div className="sm" style={{ fontWeight: 600 }}>
                             {t.name}
                           </div>
-                          <div className="tiny muted">{sub}</div>
+                          <div className="tiny muted act-sub">{sub}</div>
                         </td>
+                        <td className="act-account tiny muted">{sub}</td>
                         <td style={{ textAlign: 'right' }}>
                           <button
                             type="button"
@@ -382,8 +424,10 @@ export default function Activity() {
                       </tr>
 
                       {open && (
+                        // FIVE, not three. At three the editor renders under-wide
+                        // and the table sprouts a phantom sixth column beside it.
                         <tr>
-                          <td colSpan={3} style={{ paddingTop: 0 }}>
+                          <td colSpan={5} style={{ paddingTop: 0 }}>
                             <Recategorizer
                               transaction={t}
                               loaded={transactions}
@@ -400,10 +444,10 @@ export default function Activity() {
                     </Fragment>
                   )
                 })}
-              </tbody>
-            </table>
-          </div>
-        ))
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
       )}
     </div>
   )

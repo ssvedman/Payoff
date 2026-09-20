@@ -28,6 +28,18 @@ export const moneyCents = (n: number) => cents.format(n)
 export const signedMoney = (amount: number) =>
   amount > 0 ? `−${cents.format(amount)}` : `+${cents.format(Math.abs(amount))}`
 
+/**
+ * Balance-sheet figures — net worth, per-vehicle equity — where a negative
+ * number simply means less money and renders with a minus.
+ *
+ * This is the opposite of signedMoney(), which exists for Plaid transaction
+ * amounts where a POSITIVE number is money going out. Passing equity to
+ * signedMoney() flips every sign, and the truck at −$4,702.37 would render as
+ * +$4,702.37 — an underwater vehicle reported as equity.
+ */
+export const signedAmount = (n: number, fmt: (v: number) => string = moneyCents) =>
+  `${n >= 0 ? '+' : '−'}${fmt(Math.abs(n))}`
+
 /** 12.5% · trailing zeros are trimmed, so 12.50 renders as "12.5%". */
 export const apr = (n: number | null) => {
   if (n === null || n === undefined) return null

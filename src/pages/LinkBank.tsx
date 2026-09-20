@@ -364,7 +364,9 @@ export default function LinkBank() {
   )
 
   return (
-    <div className="page">
+    // page--narrow: a wizard is a single column by nature. Widening it would
+    // only put more distance between a step and the one after it.
+    <div className="page page--narrow">
       <div style={{ fontWeight: 700, fontSize: 20, marginBottom: 4 }}>Link a bank</div>
       <div className="tiny muted" style={{ marginBottom: 16 }}>
         Sign in to your bank through Plaid. Payoff never sees your bank password.

@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 
 /**
  * A single-series trend line with an area fill, hover crosshair and tooltip.
@@ -48,10 +48,45 @@ export default function TrendChart({
   baseline = 'fit',
 }: Props) {
   const gradientId = useId()
-  const wrapRef = useRef<HTMLDivElement>(null)
+  /**
+   * The wrapper as an element in state, not a ref: when the series arrives late
+   * the component's first render returns the "no history" line, which has no
+   * wrapper at all. A ref would have been read as null once, on a mount that
+   * rendered nothing to measure, and never looked at again.
+   */
+  const [wrap, setWrap] = useState<HTMLDivElement | null>(null)
   const [hover, setHover] = useState<number | null>(null)
 
-  const W = 320
+  /**
+   * The drawing width is MEASURED, never assumed.
+   *
+   * viewBox="0 0 320 H" with width="100%" and the default preserveAspectRatio
+   * scales by min(available / 320, availableHeight / H). The height attribute
+   * pins the second term at 1, so in any column wider than 320px the chart drew
+   * at its native 320 and sat centred in several hundred pixels of dead space —
+   * and the pointer handler, which maps clientX across the rendered rect, then
+   * reported the wrong month under the cursor.
+   *
+   * preserveAspectRatio="none" would fill the box, at the cost of horizontally
+   * smearing every stroke and every label. Matching the viewBox to the real
+   * width keeps the scale at exactly 1:1 instead.
+   */
+  const [W, setW] = useState(320)
+
+  useEffect(() => {
+    if (!wrap) return
+    const apply = (w: number) => {
+      if (w > 0) setW(Math.round(w))
+    }
+    apply(wrap.getBoundingClientRect().width)
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) apply(e.contentRect.width)
+    })
+    ro.observe(wrap)
+    return () => ro.disconnect()
+  }, [wrap])
+
   const H = height
   const innerW = W - PAD.left - PAD.right
   const innerH = H - PAD.top - PAD.bottom
@@ -95,7 +130,7 @@ export default function TrendChart({
   const active = hover === null ? null : coords[hover]
 
   function onMove(e: React.PointerEvent) {
-    const el = wrapRef.current
+    const el = wrap
     if (!el || coords.length === 0) return
     const rect = el.getBoundingClientRect()
     // Map the pointer into viewBox space, then to the nearest point. The hit
@@ -114,7 +149,7 @@ export default function TrendChart({
   }
 
   return (
-    <div ref={wrapRef} style={{ position: 'relative' }}>
+    <div ref={setWrap} style={{ position: 'relative' }}>
       <svg
         viewBox={`0 0 ${W} ${H}`}
         width="100%"

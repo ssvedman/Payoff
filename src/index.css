@@ -355,3 +355,319 @@ tr:last-child td { border-bottom: none; }
   height: 10px;
   border-radius: 3px;
 }
+
+/* ---------- Shell: the wrapper the sidebar sits beside at >=1024px ---------- */
+
+.shell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Present in the DOM at every width so there is no first-paint flicker; the
+   desktop media query is the only thing that reveals it.
+
+   It carries its own class rather than reusing .nav — .nav is position:fixed at
+   bottom:0 and caps its inner row at 760px, none of which a column down the left
+   of the screen wants. */
+.sidebar {
+  display: none;
+}
+
+/* The sidebar's insides are styled here rather than in the desktop block: the
+   whole element is hidden below 1024px, so these rules reach nothing until it is
+   revealed — and the type scale stays out of the media query, where it belongs.
+   These sizes match the bottom bar's, so the nav does not grow on a big screen. */
+.sidebar__brand {
+  font-size: 16px;
+  font-weight: 700;
+  padding: 0 10px;
+  margin-bottom: 14px;
+}
+
+.sidebar__toggle {
+  padding: 0 10px;
+  margin-bottom: 18px;
+}
+
+.sidebar__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar__nav a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--r-control);
+  color: var(--steel);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sidebar__nav a.on {
+  background: var(--card);
+  color: var(--ink);
+}
+
+.sidebar__nav i {
+  font-style: normal;
+  font-size: 15px;
+  width: 18px;
+  text-align: center;
+}
+
+/* ---------- Wide-screen table furniture ----------
+
+   Column headings, and the columns that only earn their space once there is
+   some. Hidden by default and revealed in the desktop block, so a phone renders
+   exactly what it rendered before: the same facts, stacked into the row's
+   sub-line instead of spread across cells. */
+
+.act-head,
+.act-date,
+.act-account,
+.acct-head,
+.acct-col,
+.acct-sub-wide {
+  display: none;
+}
+
+.act-head th,
+.acct-head th {
+  text-align: left;
+  padding: 0 0 7px;
+  border-bottom: 1px solid var(--line);
+}
+
+.act-head th.r,
+.acct-head th.r {
+  text-align: right;
+}
+
+/* A section break inside a single long table — "DEBTS", "BANK ACCOUNTS". */
+.acct-group td {
+  padding: 22px 0 4px;
+  border-bottom: none;
+}
+
+/* Home's header row. The justification is a class, not an inline style, so the
+   desktop block can move the freshness link over once the wordmark is hidden. */
+.home-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* The savings panel sits below the queue on a phone and beside it on a desktop.
+   Its separation from the queue is a class rather than an inline style for the
+   same reason: in the two-column layout it is the top of its own column and an
+   inline margin would drop it 20px below the heading opposite. */
+.home-savings {
+  margin-top: 20px;
+}
+
+/* ---------- Personal / Business ---------- */
+
+.topbar {
+  display: flex;
+  justify-content: center;
+  padding: 10px 20px 0;
+}
+
+.seg {
+  display: inline-flex;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  padding: 2px;
+  gap: 2px;
+}
+
+.seg__btn {
+  font: inherit;
+  font-size: 13px;
+  color: var(--steel);
+  background: none;
+  border: 0;
+  border-radius: 3px;
+  padding: 5px 16px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.seg__btn.on {
+  background: var(--white);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgb(22 30 39 / 8%);
+}
+
+/* ==================================================================== *
+ * Desktop — the one and only wide-screen block, deliberately last.
+ *
+ * A bigger screen shows MORE, never bigger: there is not a single font-size,
+ * line-height or font-weight rule below this line. Everything here is layout.
+ * ==================================================================== */
+
+@media (min-width: 1024px) {
+  /* 0px, never a bare 0. --nav-h is read inside calc() in the .page padding,
+     and calc() rejects a unitless length there — which drops the WHOLE padding
+     declaration, taking the 20px side gutters with it. */
+  :root {
+    --nav-h: 0px;
+  }
+
+  /* Zeroing --nav-h only reclaims the space the bar reserved. The bar itself is
+     position:fixed at z-index 20 and would still float over the content, so it
+     has to be dismissed separately. */
+  .nav {
+    display: none;
+  }
+
+  /* Only the authenticated shell becomes a row. SignIn, Loading and the auth
+     callback render outside it with no sidebar, and .page--centered relies on
+     the column direction for its justify-content:center — turning .app into a
+     row unconditionally would push the sign-in form to the top of the screen. */
+  .app:has(> .sidebar) {
+    flex-direction: row;
+  }
+
+  .sidebar {
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 214px;
+    width: 214px;
+    position: sticky;
+    top: 0;
+    align-self: flex-start;
+    height: 100dvh;
+    padding: 22px 12px;
+    border-right: 1px solid var(--line);
+    background: var(--white);
+  }
+
+  /* The phone's Personal/Business bar. The sidebar carries the same control,
+     reading the same context, so exactly one of the two is ever on screen. */
+  .topbar {
+    display: none;
+  }
+
+  /* 1100px, not 760px. The margin:0 auto on .page centres this column in the
+     space remaining to the RIGHT of the sidebar rather than in the viewport —
+     that is the intent: the column stays put as pages are switched, and it is
+     the sidebar, not the content, that is anchored to the edge.
+
+     The :not(.page--centered) matters. A bare `.page` rule here has the same
+     specificity as the `.page--centered` rule above and comes after it, so it
+     would silently widen the sign-in card to 1100px and cut its bottom padding —
+     on a screen that renders outside this shell entirely and was never part of
+     this change. */
+  .page:not(.page--centered) {
+    max-width: 1100px;
+    padding: 24px 32px 56px;
+  }
+
+  /* Settings and LinkBank stay narrow. A label at x=0 and a 40px switch at
+     x=1060 is not a row anybody can read across, and a wizard is a single
+     column by nature. Two classes deep so it outranks the rule above, which is
+     also (0,2,0) and would otherwise win on source order. */
+  .page.page--narrow {
+    max-width: 680px;
+  }
+
+  /* The in-page wordmark would sit a couple of hundred pixels from the identical
+     one in the sidebar. Hidden, not deleted — the phone still needs it. */
+  .home-wordmark {
+    display: none;
+  }
+
+  .home-header {
+    justify-content: flex-end;
+  }
+
+  /* ---- two-column page bodies ---- */
+
+  .dk-cols {
+    display: grid;
+    gap: 28px;
+    align-items: start;
+  }
+
+  .dk-cols--even {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .dk-cols--wide-left {
+    grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  }
+
+  /* A chart column sized to the chart rather than to the row. Business.tsx's
+     NetChart and StackChart still draw at a native 320 viewBox units and centre
+     themselves in whatever box they are given, so a wider track would only add
+     dead space around them. ProjectionChart instead measures this track and
+     fills it at 1:1. Either way the figures sit beside the chart, not under it. */
+  .dk-cols--chart {
+    grid-template-columns: 360px minmax(0, 1fr);
+  }
+
+  /* A column's opening heading sits level with its neighbour's. */
+  .dk-cols > * > .sect:first-child {
+    margin-top: 0;
+  }
+
+  .home-savings {
+    margin-top: 0;
+  }
+
+  /* The legend is flex: 1 1 220px with no ceiling, so in a 1100px row its
+     right-aligned amounts drift several hundred pixels from their labels. */
+  .line-pie-legend {
+    max-width: 400px;
+  }
+
+  /* A form panel does not want to be 1036px wide either. */
+  .dk-panel-cap {
+    max-width: 540px;
+  }
+
+  /* ---- Activity: a real table ---- */
+
+  .act-head {
+    display: table-header-group;
+  }
+
+  .act-date,
+  .act-account {
+    display: table-cell;
+  }
+
+  /* The date and the account now have columns of their own, so the phone's
+     per-day heading rows and per-row sub-line are duplicates here. */
+  .act-daybreak,
+  .act-sub {
+    display: none;
+  }
+
+  /* ---- Accounts: one table, not three ---- */
+
+  .acct-head {
+    display: table-header-group;
+  }
+
+  .acct-col {
+    display: table-cell;
+  }
+
+  .acct-sub-wide {
+    display: block;
+  }
+
+  .acct-sub-mobile {
+    display: none;
+  }
+}

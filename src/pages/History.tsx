@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
+import { selectAllPages, supabase } from '../lib/supabase'
 import { useData } from '../lib/data'
 import { money, moneyCents, accountLabel } from '../lib/format'
 import TrendChart, { type TrendPoint } from '../components/TrendChart'
@@ -12,9 +12,9 @@ import TrendChart, { type TrendPoint } from '../components/TrendChart'
  * six figures and savings around two; sharing an axis would invent a relationship
  * that is not in the data.
  *
- * Per-account history is nine series, far past the point where distinct colors
- * stay tellable apart, so it is small multiples — one sparkline per account in a
- * table — instead of a nine-line spaghetti chart.
+ * Per-account history is one series per debt account, far past the point where
+ * distinct colors stay tellable apart, so it is small multiples — one sparkline
+ * per account in a table — instead of a spaghetti chart.
  *
  * Amber appears nowhere here. It means the current target and nothing else.
  */
@@ -46,16 +46,43 @@ export default function History() {
   const [weeks, setWeeks] = useState<WeekRow[] | null>(null)
   const [perAccount, setPerAccount] = useState<AccountWeekRow[]>([])
   const [error, setError] = useState<string | null>(null)
+  /**
+   * Tracked apart from `error` because the per-account table has to say
+   * something different in every row. An empty `perAccount` renders "no history
+   * yet" against each debt, which is a factual claim — and a false one when the
+   * read failed rather than came back empty. The banner alone does not undo it:
+   * the reader looks at the row, not the banner.
+   */
+  const [acctsFailed, setAcctsFailed] = useState(false)
 
   useEffect(() => {
     let active = true
     void (async () => {
       const [totals, accts] = await Promise.all([
         supabase.from('debt_history_weekly').select('*').order('week_start'),
-        supabase
-          .from('account_balance_weekly')
-          .select('week_start, account_id, balance, covered')
-          .order('week_start'),
+        // Paged: this view holds 2,415 rows and PostgREST caps a request at
+        // 1000 without saying so. Ordered ascending, the rows it dropped were
+        // the NEWEST fourteen months, so every per-account change below was
+        // measured across a span ending July 2025 — the personal loan's $50,000
+        // rise printed as a $0 change, in green.
+        selectAllPages<AccountWeekRow>((from, to) =>
+          supabase
+            .from('account_balance_weekly')
+            .select('week_start, account_id, balance, covered')
+            // week_start alone is NOT a total order: the view is weeks CROSS
+            // JOIN accounts, so all 23 accounts tie on every week and a page
+            // boundary lands inside a tied group (row 1000 falls 11 rows into
+            // one week). Each .range() call is a separate statement and the
+            // planner picks a different sort per page — top-N heapsort while
+            // limit+offset is small, quicksort once it exceeds the row count —
+            // and neither sort is stable, so the tied rows come back in a
+            // different order per page. Rows then appear on two pages or on
+            // neither. account_id makes (week_start, account_id) unique, which
+            // is what .range() paging actually requires.
+            .order('week_start')
+            .order('account_id')
+            .range(from, to),
+        ),
       ])
       if (!active) return
       if (totals.error) {
@@ -64,7 +91,17 @@ export default function History() {
         return
       }
       setWeeks((totals.data ?? []) as unknown as WeekRow[])
-      setPerAccount((accts.data ?? []) as unknown as AccountWeekRow[])
+      // A failed per-account read is not "no history yet". Left unchecked it
+      // rendered an empty table and a muted dash against every debt, which
+      // reads as a confident statement that nothing has moved.
+      if (accts.error) {
+        setError(accts.error)
+        setPerAccount([])
+        setAcctsFailed(true)
+        return
+      }
+      setAcctsFailed(false)
+      setPerAccount(accts.data)
     })()
     return () => {
       active = false
@@ -120,8 +157,15 @@ export default function History() {
       <div className="page" aria-busy="true" aria-label="Loading history">
         <div className="skeleton" style={{ width: 120, height: 20, marginBottom: 10 }} />
         <div className="skeleton" style={{ width: 170, height: 12, marginBottom: 22 }} />
-        <div className="skeleton" style={{ height: 132, marginBottom: 24 }} />
-        <div className="skeleton" style={{ height: 132 }} />
+        {/* Two columns here too, so the charts do not draw at full width and then
+            halve themselves the moment the readings arrive. */}
+        <div className="dk-cols dk-cols--even">
+          <div>
+            <div className="skeleton" style={{ height: 132, marginBottom: 24 }} />
+            <div className="skeleton" style={{ height: 132 }} />
+          </div>
+          <div className="skeleton" style={{ height: 288 }} />
+        </div>
       </div>
     )
   }
@@ -171,6 +215,15 @@ export default function History() {
         </div>
       ) : null}
 
+      {/*
+        The two whole-household trends on the left, the per-account sparklines
+        on the right. They answer the same question at two scales and
+        on a wide screen they can be read against each other — a step in the
+        total and the account that caused it, side by side rather than a scroll
+        apart. Below 1024px this wrapper is an ordinary div and nothing moves.
+      */}
+      <div className="dk-cols dk-cols--even">
+      <div>
       {/* ---- total owed ---- */}
       <div className="sect" style={{ marginTop: 0 }}>Total owed</div>
       <div className="tnum" style={{ fontSize: 30, fontWeight: 800, letterSpacing: '-.02em' }}>
@@ -211,6 +264,9 @@ export default function History() {
         baseline="zero"
       />
 
+      </div>
+
+      <div>
       {/* ---- per account, as small multiples ---- */}
       <div className="sect">By account</div>
       <div className="tiny muted" style={{ marginBottom: 8, lineHeight: 1.5 }}>
@@ -235,7 +291,9 @@ export default function History() {
                   {series.length > 1 ? (
                     <Sparkline points={series} down={delta <= 0} />
                   ) : (
-                    <span className="tiny muted">no history yet</span>
+                    <span className="tiny muted">
+                      {acctsFailed ? 'not loaded' : 'no history yet'}
+                    </span>
                   )}
                 </td>
                 <td className="tnum tiny" style={{ textAlign: 'right', width: 62 }}>
@@ -253,6 +311,8 @@ export default function History() {
           })}
         </tbody>
       </table>
+      </div>
+      </div>
 
       <button className="btn ghost" style={{ marginTop: 20 }} onClick={() => navigate('/')}>
         Back

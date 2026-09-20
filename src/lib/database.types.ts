@@ -15,7 +15,18 @@ export type BucketSource = 'auto' | 'rule' | 'manual'
  */
 export type AccountOwner = string
 export type AccountKind = 'card' | 'loan' | 'tax' | 'savings' | 'checking'
-export type SnapshotSource = 'plaid' | 'manual'
+/**
+ * 'derived' was missing here while being 91% of the table — 1,029 rows against
+ * 85 plaid and 16 manual. The CHECK constraint on balance_snapshots.source has
+ * always allowed it; the generated union simply did not, so any code comparing a
+ * snapshot's source to 'derived' failed to compile and had to widen the row to
+ * string to get around it.
+ *
+ * 'derived' means a balance reconstructed by walking transactions rather than
+ * read from the bank, so it is the one source a caller may legitimately want to
+ * exclude when it needs an observed figure.
+ */
+export type SnapshotSource = 'plaid' | 'manual' | 'derived'
 export type ItemStatus = 'ok' | 'login_required' | 'error'
 
 export type AlertType =
@@ -169,6 +180,74 @@ export type AuditLogRow = {
   created_at: string
 }
 
+/**
+ * The other side of net worth. Debt alone only ever looks bad.
+ *
+ * `secured_by` is the loan held against the asset, by account id — never by
+ * name. The truck's loan is "Truck — Issuer" with an em dash, and any
+ * name matching against it finds nothing and reports the vehicle as owned
+ * outright, which is the opposite of true: it is $4,702.37 underwater.
+ */
+export type AssetRow = {
+  id: string
+  name: string
+  kind: 'vehicle' | 'other'
+  estimated_value: number
+  secured_by: string | null
+  /** A date column, not a timestamp. Render it through parseDateOnly(). */
+  valued_on: string
+  notes: string | null
+  created_at: string
+}
+
+/**
+ * Known repayment terms for the three debts whose schedules are actually on
+ * record. Where a row exists it beats accounts.minimum_payment + due_day: it
+ * carries the real payment day, and accounts.due_day is null on every
+ * Plaid-fed card.
+ */
+export type DebtScheduleRow = {
+  account_id: string
+  method: string
+  anchor_balance: number
+  anchor_date: string
+  annual_rate: number
+  payment_amount: number
+  payment_day: number
+  original_principal: number | null
+  origination_date: string | null
+  term_months: number | null
+  penalty_monthly_rate: number
+  penalty_base: number | null
+  match_amount: number | null
+  match_text: string | null
+  note: string | null
+  updated_at: string
+}
+
+/**
+ * The business's clients, kept in the database rather than in source.
+ *
+ * This repository is public, and a client's ACH company name written into a
+ * matcher would be published permanently beside the household's balances — the
+ * same reason AccountOwner is not enumerated above.
+ */
+export type BusinessPayerRow = {
+  id: string
+  /** Lowercased fragment matched against the raw transaction descriptor. */
+  match_text: string
+  label: string
+  sort_order: number
+  created_at: string
+}
+
+export type BudgetLineRuleRow = {
+  id: string
+  plaid_prefix: string
+  budget_line_id: string
+  created_at: string
+}
+
 type T<Row, Ins = Partial<Row>, Upd = Partial<Row>> = { Row: Row; Insert: Ins; Update: Upd; Relationships: [] }
 
 export type Database = {
@@ -186,6 +265,10 @@ export type Database = {
       plaid_items: T<PlaidItemRow>
       alert_log: T<AlertLogRow>
       audit_log: T<AuditLogRow>
+      assets: T<AssetRow>
+      debt_schedules: T<DebtScheduleRow>
+      budget_line_rules: T<BudgetLineRuleRow>
+      business_payers: T<BusinessPayerRow>
     }
     Views: {
       debt_history_weekly: {

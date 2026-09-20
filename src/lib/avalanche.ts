@@ -35,7 +35,18 @@ export interface SimResult {
   events: PayoffEvent[]
   /** True when the plan does not converge — the pool cannot outpace interest. */
   stalled: boolean
+  /**
+   * Total owed at the end of each month, with the starting total at index 0, so
+   * balances[n] is the debt after n months. Both simulations fill this from the
+   * same rounding points, which is what lets the two lines be compared to the
+   * cent on one chart.
+   */
+  balances: number[]
 }
+
+/** Total still owed across a working set. */
+const totalOwed = (debts: { balance: number }[]) =>
+  round2(debts.reduce((sum, d) => sum + d.balance, 0))
 
 /** Guard against a non-converging plan producing an infinite loop. */
 const MAX_MONTHS = 600
@@ -81,10 +92,11 @@ export function simulate(debts: SimDebt[], attackFund: number): SimResult {
     .map((d) => ({ ...d }))
 
   if (open.length === 0) {
-    return { months: 0, totalInterest: 0, events: [], stalled: false }
+    return { months: 0, totalInterest: 0, events: [], stalled: false, balances: [0] }
   }
 
   const events: PayoffEvent[] = []
+  const balances: number[] = [totalOwed(open)]
   let totalInterest = 0
   let month = 0
 
@@ -121,6 +133,8 @@ export function simulate(debts: SimDebt[], attackFund: number): SimResult {
     const cleared = open.filter((d) => d.balance <= 0)
     for (const d of cleared) events.push({ id: d.id, name: d.name, month })
     open = open.filter((d) => d.balance > 0)
+
+    balances.push(totalOwed(open))
   }
 
   return {
@@ -128,6 +142,71 @@ export function simulate(debts: SimDebt[], attackFund: number): SimResult {
     totalInterest: round2(totalInterest),
     events,
     stalled: open.length > 0,
+    balances,
+  }
+}
+
+/**
+ * "Doing nothing": every debt pays its own minimum, forever.
+ *
+ * This is NOT simulate(debts, 0). simulate() holds the monthly outlay constant,
+ * so a cleared account's minimum rolls into the next one — that is the avalanche
+ * rule, and it is a deliberate act. Here nothing is redirected: when a debt
+ * clears, its payment simply stops, and the money goes wherever it used to go.
+ * That is the honest counterfactual the plan is measured against.
+ *
+ * Against live balances the difference is the whole argument for the plan:
+ * 29 months and $21,153.77 of interest, against 103 months and $57,373.37.
+ * simulate(debts, 0) would say 42 months and $34,212.02, understating the gap
+ * by more than half.
+ *
+ * A debt whose minimum does not cover its interest never clears. The highest-rate card is the
+ * near miss — 39.99% on $5,616.22 accrues $187.13 a month against a $194.00
+ * minimum, so it repays $6.87 in month one and takes 103 months on its own. A
+ * rate rise would stall it outright, which is what `stalled` reports.
+ */
+export function simulateMinimumsOnly(debts: SimDebt[]): SimResult {
+  let open = inAvalancheOrder(debts)
+    .filter((d) => d.balance > 0)
+    .map((d) => ({ ...d }))
+
+  if (open.length === 0) {
+    return { months: 0, totalInterest: 0, events: [], stalled: false, balances: [0] }
+  }
+
+  const events: PayoffEvent[] = []
+  const balances: number[] = [totalOwed(open)]
+  let totalInterest = 0
+  let month = 0
+
+  while (open.length > 0 && month < MAX_MONTHS) {
+    month++
+
+    for (const d of open) {
+      const rate = (d.apr ?? 0) / 100 / 12
+      const interest = round2(d.balance * rate)
+      d.balance = round2(d.balance + interest)
+      totalInterest = round2(totalInterest + interest)
+
+      // Each debt pays its own minimum and no more. Nothing is pooled, so a
+      // cleared debt frees nothing for the others.
+      const pay = Math.min(d.minimumPayment, d.balance)
+      d.balance = round2(d.balance - pay)
+    }
+
+    const cleared = open.filter((d) => d.balance <= 0)
+    for (const d of cleared) events.push({ id: d.id, name: d.name, month })
+    open = open.filter((d) => d.balance > 0)
+
+    balances.push(totalOwed(open))
+  }
+
+  return {
+    months: month,
+    totalInterest: round2(totalInterest),
+    events,
+    stalled: open.length > 0,
+    balances,
   }
 }
 

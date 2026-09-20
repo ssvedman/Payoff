@@ -1,7 +1,10 @@
-import { HashRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { HashRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './lib/auth'
 import { DataProvider } from './lib/data'
+import { ViewModeProvider } from './lib/viewMode'
 import BottomNav from './components/BottomNav'
+import Sidebar from './components/Sidebar'
+import { TopBar } from './components/ViewToggle'
 import Loading from './components/Loading'
 
 import SignIn from './pages/SignIn'
@@ -12,6 +15,9 @@ import Accounts from './pages/Accounts'
 import Settings from './pages/Settings'
 import LinkBank from './pages/LinkBank'
 import History from './pages/History'
+import Progress from './pages/Progress'
+import Calendar from './pages/Calendar'
+import Business from './pages/Business'
 
 /**
  * Non-negotiable #1: nothing renders before authentication.
@@ -21,7 +27,7 @@ import History from './pages/History'
  * household_members is treated as signed out for routing purposes and told so on
  * the sign-in screen; every RLS policy would return nothing for them anyway.
  */
-function RequireAuth({ children }: { children: React.ReactNode }) {
+function Protected() {
   const { session, isMember, loading } = useAuth()
   const location = useLocation()
 
@@ -30,10 +36,20 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     return <Navigate to="/signin" replace state={{ from: location.pathname }} />
   }
 
+  // One layout route rather than a wrapper per page. Wrapping each route
+  // separately remounted DataProvider on every navigation, refetching the whole
+  // dataset just to move from Home to Month — and it would reset the view mode
+  // with it.
   return (
     <DataProvider>
-      {children}
-      <BottomNav />
+      <ViewModeProvider>
+        <Sidebar />
+        <div className="shell">
+          <TopBar />
+          <Outlet />
+        </div>
+        <BottomNav />
+      </ViewModeProvider>
     </DataProvider>
   )
 }
@@ -75,13 +91,18 @@ function Shell() {
       <Route path="/signin" element={<RedirectIfAuthed><SignIn /></RedirectIfAuthed>} />
       <Route path="/auth/callback" element={<AuthCallback />} />
 
-      <Route path="/"         element={<RequireAuth><Home /></RequireAuth>} />
-      <Route path="/month"    element={<RequireAuth><Month /></RequireAuth>} />
-      <Route path="/activity" element={<RequireAuth><Activity /></RequireAuth>} />
-      <Route path="/accounts" element={<RequireAuth><Accounts /></RequireAuth>} />
-      <Route path="/settings" element={<RequireAuth><Settings /></RequireAuth>} />
-      <Route path="/link"     element={<RequireAuth><LinkBank /></RequireAuth>} />
-      <Route path="/history"  element={<RequireAuth><History /></RequireAuth>} />
+      <Route element={<Protected />}>
+        <Route path="/"         element={<Home />} />
+        <Route path="/month"    element={<Month />} />
+        <Route path="/progress" element={<Progress />} />
+        <Route path="/calendar" element={<Calendar />} />
+        <Route path="/business" element={<Business />} />
+        <Route path="/activity" element={<Activity />} />
+        <Route path="/accounts" element={<Accounts />} />
+        <Route path="/settings" element={<Settings />} />
+        <Route path="/link"     element={<LinkBank />} />
+        <Route path="/history"  element={<History />} />
+      </Route>
 
       {/* Catch-all: the auth *error* redirect can still clobber the fragment, so
           anything unrecognised goes home rather than rendering a blank screen. */}

@@ -179,34 +179,43 @@ export default function Month() {
           style={{ width: 168, height: 12, marginBottom: 24 }}
           aria-hidden="true"
         />
-        {[0, 1, 2, 3].map((i) => (
-          <div key={i} style={{ marginBottom: 17 }} aria-hidden="true">
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                marginBottom: 7,
-              }}
-            >
-              <div className="skeleton" style={{ width: 84, height: 12 }} />
-              <div className="skeleton" style={{ width: 96, height: 12 }} />
-            </div>
-            <div className="skeleton" style={{ height: 7, borderRadius: 4 }} />
+        {/* The same two-column wrapper the loaded page uses, so the bars do not
+            shrink from full width into a half column the moment the data lands. */}
+        <div className="dk-cols dk-cols--even">
+          <div>
+            {[0, 1, 2, 3].map((i) => (
+              <div key={i} style={{ marginBottom: 17 }} aria-hidden="true">
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    marginBottom: 7,
+                  }}
+                >
+                  <div className="skeleton" style={{ width: 84, height: 12 }} />
+                  <div className="skeleton" style={{ width: 96, height: 12 }} />
+                </div>
+                <div className="skeleton" style={{ height: 7, borderRadius: 4 }} />
+              </div>
+            ))}
           </div>
-        ))}
-        <div
-          className="skeleton"
-          style={{ width: 120, height: 12, margin: '26px 0 14px' }}
-          aria-hidden="true"
-        />
-        {[0, 1, 2, 3, 4].map((i) => (
-          <div
-            key={i}
-            className="skeleton"
-            style={{ height: 12, marginBottom: 18, width: `${92 - i * 6}%` }}
-            aria-hidden="true"
-          />
-        ))}
+
+          <div>
+            <div
+              className="skeleton"
+              style={{ width: 120, height: 12, margin: '26px 0 14px' }}
+              aria-hidden="true"
+            />
+            {[0, 1, 2, 3, 4].map((i) => (
+              <div
+                key={i}
+                className="skeleton"
+                style={{ height: 12, marginBottom: 18, width: `${92 - i * 6}%` }}
+                aria-hidden="true"
+              />
+            ))}
+          </div>
+        </div>
       </div>
     )
   }
@@ -295,6 +304,14 @@ export default function Month() {
           ` ${businessExcluded} business ${businessExcluded === 1 ? 'transaction is' : 'transactions are'} not counted here.`}
       </div>
 
+      {/*
+        At >=1024px the four bucket bars take the left column and the two
+        by-line breakdowns take the right, so a bar and the lines that make it
+        up are on screen together instead of a scroll apart. Below that width
+        this wrapper is an ordinary div and the order is exactly as it was.
+      */}
+      <div className="dk-cols dk-cols--even">
+      <div>
       {/* Optional */}
       <div style={{ marginBottom: 17 }}>
         <BucketHeader
@@ -440,6 +457,9 @@ export default function Month() {
         )}
       </div>
 
+      </div>
+
+      <div>
       <div className="sect">Optional, by line</div>
       <LinePie
         lines={linesIn.optional.lines}
@@ -466,7 +486,12 @@ export default function Month() {
           No transactions recorded this month.
         </div>
       )}
+      </div>
+      </div>
 
+      {/* Full width, deliberately: three columns of plan-versus-actual read
+          across, and this is the page's conclusion rather than a detail of
+          either column above it. */}
       <div className="sect">Compared with the plan</div>
       <div className="card-panel">
         <table style={{ margin: 0 }}>

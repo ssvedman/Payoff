@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import Bar from '../components/Bar'
+import NetWorthPanel from '../components/NetWorthPanel'
 import { useData, usePayoffPlan, useMonthTotals } from '../lib/data'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -21,7 +22,7 @@ const clamp01 = (n: number) => Math.max(0, Math.min(1, n))
  * here; what earns the space instead is when the thing is due.
  *
  * The due part carries color of its own because a date is only worth showing if
- * the urgent ones stand out — nine debts in grey is a list to read, not a thing
+ * the urgent ones stand out — a dozen debts in grey is a list to read, not a thing
  * to act on. Red for overdue or due within two days; never amber, which means
  * the current target and nothing else.
  */
@@ -65,8 +66,15 @@ function Header({
 }) {
   return (
     <div style={{ marginBottom: 18 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontWeight: 700, fontSize: 16 }}>Payoff</span>
+      {/* The wordmark is hidden at >=1024px, where the sidebar carries the same
+          word a couple of hundred pixels to the left. Hidden, not removed: on a
+          phone there is no sidebar and this is the only place the app is named.
+          The row's justification lives in CSS so the freshness link can take the
+          full width once the wordmark goes. */}
+      <div className="home-header">
+        <span className="home-wordmark" style={{ fontWeight: 700, fontSize: 16 }}>
+          Payoff
+        </span>
         <button
           type="button"
           onClick={onRefresh}
@@ -101,15 +109,10 @@ function Header({
 function HomeSkeleton() {
   return (
     <div className="page">
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          marginBottom: 18,
-        }}
-      >
-        <span style={{ fontWeight: 700, fontSize: 16 }}>Payoff</span>
+      <div className="home-header" style={{ marginBottom: 18 }}>
+        <span className="home-wordmark" style={{ fontWeight: 700, fontSize: 16 }}>
+          Payoff
+        </span>
         <div className="skeleton" style={{ width: 84, height: 9 }} aria-hidden="true" />
       </div>
 
@@ -120,21 +123,33 @@ function HomeSkeleton() {
 
       <div className="skeleton" style={{ width: '100%', height: 132, marginBottom: 20 }} aria-hidden="true" />
 
-      <div className="sect">Queue</div>
-      <div style={{ borderTop: '2px solid var(--ink)' }} aria-label="Loading the queue">
-        {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
-          <div className="row" key={i}>
-            <div className="skeleton dot" aria-hidden="true" />
-            <div style={{ flex: 1 }}>
-              <div className="skeleton" style={{ width: 124, height: 9, marginBottom: 6 }} aria-hidden="true" />
-              <div className="skeleton" style={{ width: 86, height: 8 }} aria-hidden="true" />
-            </div>
-            <div className="skeleton" style={{ width: 58, height: 9 }} aria-hidden="true" />
-          </div>
-        ))}
-      </div>
+      {/* The net worth panel: headline, three breakdown lines, four vehicles.
+          Roughly the height the real one lands at, so the queue does not jump
+          down the screen the moment the data arrives. */}
+      <div className="skeleton" style={{ width: '100%', height: 268, marginBottom: 20 }} aria-hidden="true" />
 
-      <div className="skeleton" style={{ width: '100%', height: 84, marginTop: 20 }} aria-hidden="true" />
+      {/* The SAME two-column wrapper the loaded page uses. Without it the queue
+          runs the full 1100px here and then jumps into a 1.5fr column the moment
+          the data lands, taking the largest figure on the screen with it. */}
+      <div className="dk-cols dk-cols--wide-left">
+        <div>
+          <div className="sect">Queue</div>
+          <div style={{ borderTop: '2px solid var(--ink)' }} aria-label="Loading the queue">
+            {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+              <div className="row" key={i}>
+                <div className="skeleton dot" aria-hidden="true" />
+                <div style={{ flex: 1 }}>
+                  <div className="skeleton" style={{ width: 124, height: 9, marginBottom: 6 }} aria-hidden="true" />
+                  <div className="skeleton" style={{ width: 86, height: 8 }} aria-hidden="true" />
+                </div>
+                <div className="skeleton" style={{ width: 58, height: 9 }} aria-hidden="true" />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="skeleton home-savings" style={{ width: '100%', height: 84 }} aria-hidden="true" />
+      </div>
     </div>
   )
 }
@@ -142,13 +157,13 @@ function HomeSkeleton() {
 export default function Home() {
   const navigate = useNavigate()
   /**
-   * Cleared debts are collapsed by default. Nine struck-through rows pushed the
+   * Cleared debts are collapsed by default. Struck-through rows pushed the
    * live queue below the fold, and the accounts that still need paying are the
    * reason the screen exists. They stay reachable — a cleared debt is the record
    * of the work done, not something to hide.
    */
   const [showCleared, setShowCleared] = useState(false)
-  const { loading, error, debts, lastSyncedAt, progress, refresh } = useData()
+  const { loading, error, debts, lastSyncedAt, progress, progressError, refresh } = useData()
   const [syncing, setSyncing] = useState(false)
   const [syncNote, setSyncNote] = useState<string | null>(null)
 
@@ -224,6 +239,17 @@ export default function Home() {
           <div className="tiny" style={{ color: 'var(--red-tx)', marginTop: 3 }}>
             {error ?? 'The plan row is empty, so no figures can be derived.'}
           </div>
+        </div>
+
+        {/*
+          The balance sheet survives a missing plan row. Net worth is derived
+          from accounts and assets alone — it needs no attack fund, no start
+          date and no simulation — so having it vanish along with everything
+          else whenever plan_settings fails to load hid figures that were
+          sitting right there in hand.
+        */}
+        <div style={{ marginTop: 18 }}>
+          <NetWorthPanel />
         </div>
       </div>
     )
@@ -314,8 +340,12 @@ export default function Home() {
         {money(plan.totalOwed)}
       </div>
 
+      {/* A failed progress read is not zero progress. Without this the line
+          silently reads "$159 cleared so far" against a true $28,827, because
+          the fallback measures from opening_balance — right for one genuinely
+          new account, wrong for every account at once. Say it is unknown. */}
       <div className="sm muted tnum" style={{ margin: '5px 0 2px' }}>
-        {money(plan.cleared)} cleared so far
+        {progressError ? 'Progress not loaded' : `${money(plan.cleared)} cleared so far`}
       </div>
 
       {/* What actually leaves each month. The total owed says how big the thing
@@ -329,7 +359,7 @@ export default function Home() {
       </div>
 
       <div style={{ marginBottom: 20 }}>
-        <Bar pct={plan.progress} color="var(--green)" />
+        <Bar pct={progressError ? 0 : plan.progress} color="var(--green)" />
 
         {/* The simulation already computed all of this; none of it was ever shown.
             A finish date is the question the whole plan exists to answer, and the
@@ -427,6 +457,23 @@ export default function Home() {
         </div>
       )}
 
+      {/*
+        Above the queue, below the target. The headline says what is owed and the
+        queue says in what order it gets paid; this says what the household is
+        actually worth while that happens — which is the one figure on the screen
+        that gets BETTER by going up, and the only place the truck being
+        underwater is visible at all.
+      */}
+      <NetWorthPanel />
+
+      {/*
+        Queue and savings side by side at >=1024px, stacked below it. The queue
+        is the longer of the two by far, so it takes the wider column and the
+        savings panel sits beside its top rather than a screen below its bottom.
+        On a phone this wrapper is an ordinary div and the order is unchanged.
+      */}
+      <div className="dk-cols dk-cols--wide-left">
+      <div>
       <div className="sect">Queue</div>
       <div style={{ borderTop: '2px solid var(--ink)' }}>
         {shownDebts.length === 0 && (
@@ -543,8 +590,9 @@ export default function Home() {
             : `Show ${clearedDebts.length} cleared ${clearedDebts.length === 1 ? 'account' : 'accounts'}`}
         </button>
       )}
+      </div>
 
-      <div className="card-panel" style={{ marginTop: 20 }}>
+      <div className="card-panel home-savings">
         <div
           style={{
             display: 'flex',
@@ -569,6 +617,7 @@ export default function Home() {
         <div className="tiny muted tnum" style={{ marginTop: 3 }}>
           {money(plan.savingsRemaining)} to the {money(plan.depositTarget)} deposit target
         </div>
+      </div>
       </div>
     </div>
   )
