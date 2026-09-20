@@ -326,6 +326,11 @@ function useHistory(
           amount: num(r.amount),
           posted_on: r.posted_on as string,
           pending: r.pending === true,
+          // Carried through, not just selected. Leaving this off the mapped row
+          // while it sat in the select list made every series budget-line-less,
+          // so reconcileRoutes() bailed at its first guard and a rent paid from
+          // the other account still reported as weeks overdue.
+          budget_line_id: (r.budget_line_id as string | null) ?? null,
         })
       }
       if (batch.length < PAGE) break
