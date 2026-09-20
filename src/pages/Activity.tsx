@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import Recategorizer, { bucketStyle, type MoveNotice } from '../components/Recategorizer'
+import MarkRecurring from '../components/MarkRecurring'
 import MoveNoticeBar from '../components/MoveNoticeBar'
 import GroupedActivity, { GROUPINGS, type GroupBy } from '../components/GroupedActivity'
 import { useData, isBusinessTxn, type Transaction } from '../lib/data'
@@ -438,6 +439,11 @@ export default function Activity() {
                                 if (filter === 'review') await loadReview()
                               }}
                             />
+                            {/* Same expander, because it is the same question
+                                asked twice: what IS this row. The bucket says
+                                what kind of money it is; this says whether it
+                                will happen again. */}
+                            <MarkRecurring transaction={t} onDone={() => setOpenId(null)} />
                           </td>
                         </tr>
                       )}

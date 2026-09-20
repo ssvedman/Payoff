@@ -23,6 +23,13 @@ import {
   type Series,
 } from './cadence'
 import type { DebtScheduleRow } from './database.types'
+import {
+  applyOverrides,
+  confirmedSeries,
+  useRecurringOverrides,
+  type Override,
+  type Resurrected,
+} from './recurring'
 
 /** PostgREST hands numeric back as "31000.00". Coerce at the boundary, once. */
 const num = (v: unknown): number => (typeof v === 'number' ? v : Number(v ?? 0))
@@ -103,6 +110,15 @@ export interface CalendarModel {
   negativeDays: DayCell[]
   /** Series we are willing to put a date on. */
   projectedSeries: Series[]
+  /**
+   * Dismissed as no longer active, and charged anyway since. The bill somebody
+   * is sure they cancelled, still being taken.
+   */
+  resurrected: Resurrected[]
+  /** Dismissed and quiet. Listed so a dismissal is never silently forgotten. */
+  dismissedSeries: { series: Series | null; override: Override }[]
+  /** Re-read the standing instructions after one is added or undone. */
+  refreshOverrides: () => Promise<void>
   /** Projectable, but the last event is late — reported, NOT counted. See below. */
   overdueSeries: Series[]
   /** Regular outgoings that are already counted as a payment due. */
@@ -439,6 +455,7 @@ const PAYMENT_WORD = /\b(payment|pmt|pymt|pymnt|autopay|auto pay|bill pay|billpa
 
 export function useCalendar(anchor: Date, now = new Date()): CalendarModel {
   const { accounts, checking, savingsAccounts, loading: dataLoading, error: dataError } = useData()
+  const { overrides, refresh: refreshOverrides } = useRecurringOverrides()
 
   // The string first, then the Date from the string — see useCalendarMonth. A
   // Date derived straight from the default argument changes identity on every
@@ -512,9 +529,24 @@ export function useCalendar(anchor: Date, now = new Date()): CalendarModel {
 
     /* ---------- cadence ---------- */
 
-    const series = history.rows
+    const detected = history.rows
       ? detectSeries(history.rows, { today: todayMid, accountIds: cashIdSet })
       : []
+
+    /**
+     * A member's standing instructions, applied before anything is projected.
+     *
+     * A dismissed series drops out of the grid — unless it has been charged
+     * since, in which case it comes straight back AND is reported as having come
+     * back. Money that is actually leaving has to stay in the running balance;
+     * understating what will leave is the error that costs money.
+     *
+     * A confirmed series is added for an obligation detection cannot infer yet,
+     * and only where detection produced nothing — once there is real history,
+     * the measured series is the better description than the asserted one.
+     */
+    const applied = applyOverrides(detected, overrides)
+    const series = [...applied.active, ...confirmedSeries(overrides, detected, todayMid)]
 
     /**
      * Regular outgoings that are ALREADY on the grid as a payment due.
@@ -786,6 +818,9 @@ export function useCalendar(anchor: Date, now = new Date()): CalendarModel {
       firstNegative,
       negativeDays,
       projectedSeries: countedSeries,
+      resurrected: applied.resurrected,
+      refreshOverrides,
+      dismissedSeries: applied.dismissed,
       overdueSeries,
       suppressedSeries,
       irregularSeries,
@@ -805,6 +840,8 @@ export function useCalendar(anchor: Date, now = new Date()): CalendarModel {
     history.error,
     history.loading,
     history.rows,
+    overrides,
+    refreshOverrides,
     schedules.byAccount,
     schedules.error,
     schedules.loading,

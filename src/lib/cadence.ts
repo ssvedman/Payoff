@@ -406,6 +406,37 @@ export interface DetectOptions {
  * silently delete a payroll stream from the calendar. Direction is read off the
  * sign, which nobody can edit.
  */
+/**
+ * The grouping descriptor for one row: the merchant where Plaid supplies one,
+ * otherwise the descriptor with its per-payment machine detail stripped.
+ *
+ * Exported because /activity has to compute the SAME value to mark a single
+ * transaction as recurring. Two copies of this rule would drift, and a drifted
+ * key silently marks a series that detection never produces — so the row would
+ * be confirmed and then never appear.
+ */
+export function descriptorFor(e: Pick<CadenceEvent, 'name' | 'merchant_name'>): string {
+  const merchant = e.merchant_name?.trim() || null
+  return merchant ? merchant.toLowerCase() : normaliseDescriptor(e.name)
+}
+
+/** Plaid reports a POSITIVE amount for money leaving. */
+export function directionOf(amount: number): Direction {
+  return amount < 0 ? 'in' : 'out'
+}
+
+/**
+ * account_id | descriptor | direction — the identity a series keeps across
+ * reloads, and the key every override in recurring_overrides is filed under.
+ */
+export function seriesKeyFor(
+  e: Pick<CadenceEvent, 'account_id' | 'name' | 'merchant_name' | 'amount'>,
+): string | null {
+  const descriptor = descriptorFor(e)
+  if (!descriptor) return null
+  return `${e.account_id}|${descriptor}|${directionOf(e.amount)}`
+}
+
 export function detectSeries(events: CadenceEvent[], opts: DetectOptions): Series[] {
   const { today, windowDays = WINDOW_DAYS, accountIds } = opts
 
@@ -429,17 +460,21 @@ export function detectSeries(events: CadenceEvent[], opts: DetectOptions): Serie
     if (accountIds && !accountIds.has(e.account_id)) continue
     if (e.posted_on < fromIso || e.posted_on > todayIso) continue
 
-    const merchant = e.merchant_name?.trim() || null
-    const descriptor = merchant ? merchant.toLowerCase() : normaliseDescriptor(e.name)
+    const descriptor = descriptorFor(e)
     if (!descriptor) continue
 
-    // Plaid: positive is money OUT.
-    const direction: Direction = e.amount < 0 ? 'in' : 'out'
+    const direction = directionOf(e.amount)
     const key = `${e.account_id}|${descriptor}|${direction}`
 
     let g = groups.get(key)
     if (!g) {
-      g = { accountId: e.account_id, direction, names: [], merchant, byDay: new Map() }
+      g = {
+        accountId: e.account_id,
+        direction,
+        names: [],
+        merchant: e.merchant_name?.trim() || null,
+        byDay: new Map(),
+      }
       groups.set(key, g)
     }
     g.names.push(e.name)

@@ -115,8 +115,17 @@ function Cell({
           {cell.day}
         </span>
         <span className="tiny" aria-hidden="true" style={{ letterSpacing: '-0.5px', lineHeight: 1 }}>
-          {hasIn && <span style={{ color: 'var(--ink)' }}>▲</span>}
-          {(hasOut || hasDue) && <span style={{ color: 'var(--steel)' }}>▼</span>}
+          {/*
+            Direction of travel, not judgement: green is money arriving, red is
+            money leaving. A payment due is a normal, planned event, so the red
+            here does NOT mean a deviation the way red does elsewhere in the app.
+            The day that genuinely needs attention is marked differently and more
+            loudly — a red BACKGROUND across the whole cell, with the running
+            figure in red-tx and bold — so it still reads apart from a cell that
+            merely has an outgoing on it.
+          */}
+          {hasIn && <span style={{ color: 'var(--green)' }}>▲</span>}
+          {(hasOut || hasDue) && <span style={{ color: 'var(--red)' }}>▼</span>}
         </span>
       </div>
 

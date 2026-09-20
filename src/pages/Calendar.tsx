@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import CalendarNav from '../components/CalendarNav'
 import MonthGrid from '../components/MonthGrid'
 import { useCalendar, useCalendarMonth, type DayCell, type DuePayment, type ExpectedFlow } from '../lib/calendar'
 import { cadenceLabel, type Series } from '../lib/cadence'
 import { dayHeading, isoDate, money, moneyCents, parseDateOnly, signedAmount } from '../lib/format'
+import { useRecurringOverrides } from '../lib/recurring'
 
 /**
  * /calendar — when money moves, and where household checking is projected to sit
@@ -39,7 +40,51 @@ export default function Calendar() {
   const model = useCalendar(month.anchor)
   const [selected, setSelected] = useState<string | null>(null)
 
+  /** Which row is mid-write, so its control can be disabled without freezing the page. */
+  const [busyKey, setBusyKey] = useState<string | null>(null)
+  const [overrideError, setOverrideError] = useState<string | null>(null)
+
+  const { dismiss, remove } = useRecurringOverrides()
+
   const todayIso = isoDate(new Date())
+
+  /**
+   * Mark a series as no longer active.
+   *
+   * `lastOn` is the boundary: anything charged after it is the charge somebody
+   * believed they had stopped, and the page reports it rather than hiding it.
+   */
+  const dismissSeries = useCallback(
+    async (s: Series) => {
+      setBusyKey(s.key)
+      setOverrideError(null)
+      const err = await dismiss({
+        seriesKey: s.key,
+        accountId: s.accountId || null,
+        descriptor: s.descriptor,
+        label: s.label,
+        direction: s.direction,
+        lastOn: s.lastOn,
+      })
+      if (err) setOverrideError(err)
+      else await model.refreshOverrides()
+      setBusyKey(null)
+    },
+    [dismiss, model],
+  )
+
+  /** Undo a dismissal — put the series back on the grid as if never dismissed. */
+  const restoreSeries = useCallback(
+    async (seriesKey: string) => {
+      setBusyKey(seriesKey)
+      setOverrideError(null)
+      const err = await remove(seriesKey)
+      if (err) setOverrideError(err)
+      else await model.refreshOverrides()
+      setBusyKey(null)
+    },
+    [remove, model],
+  )
 
   /** Every day in the month with anything on it, in order. */
   const busyDays = useMemo(
@@ -145,12 +190,43 @@ export default function Calendar() {
       </div>
 
       <div>
+      {/* ---------------- charges that came back ---------------- */}
+
+      {/*
+        The reason dismissing records a date rather than setting a flag.
+        Somebody marked these as finished; they have been charged since. Red is
+        right here — this IS a deviation, the one meaning red carries in this app.
+        Stated as fact, with the dates and the amount. What to do about it is not
+        this page's business.
+      */}
+      {model.resurrected.length > 0 && (
+        <div className="banner banner--red sm" style={{ marginBottom: 14 }}>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>
+            {model.resurrected.length === 1
+              ? 'One charge marked as finished has been taken again'
+              : `${model.resurrected.length} charges marked as finished have been taken again`}
+          </div>
+          {model.resurrected.map((r) => (
+            <div key={r.series.key} className="tnum" style={{ marginTop: 3 }}>
+              {r.series.label} — marked finished on {r.override.dismissedAfter}, charged{' '}
+              {r.chargedOn.length === 1 ? 'once' : `${r.chargedOn.length} times`} since (
+              {r.chargedOn.join(', ')}), {moneyCents(r.total)} in total.
+            </div>
+          ))}
+          <div style={{ marginTop: 6 }}>
+            They are counted in the projection again, because the money is leaving
+            the account whatever the instruction said.
+          </div>
+        </div>
+      )}
+
       {/* ---------------- what the projection is built from ---------------- */}
 
       <div className="sect">Expected income and outgoings</div>
       <div className="sm muted" style={{ marginBottom: 8 }}>
         Derived from the last 180 days of transactions, keyed on the account, the
-        statement descriptor and the direction of the money. Nothing here is typed in.
+        statement descriptor and the direction of the money. A row marked by hand
+        says so on its own line.
       </div>
 
       {model.projectedSeries.length === 0 ? (
@@ -158,7 +234,7 @@ export default function Calendar() {
       ) : (
         <div style={{ borderTop: '2px solid var(--ink)' }}>
           {model.projectedSeries.map((s) => (
-            <SeriesRow key={s.key} s={s} />
+            <SeriesRow key={s.key} s={s} onDismiss={dismissSeries} busy={busyKey === s.key} />
           ))}
         </div>
       )}
@@ -182,6 +258,72 @@ export default function Calendar() {
             Late money in is left out of the running balance. Late money out is still
             counted — it has not stopped being owed.
           </div>
+        </div>
+      )}
+
+      {/* ---------------- dismissed ---------------- */}
+
+      {/*
+        Listed, never just gone. A dismissal is a claim that something stopped,
+        and a claim nobody can see again is a claim nobody can check. Each row
+        says the date it was dismissed after, which is the same date a later
+        charge is measured against.
+      */}
+      {model.dismissedSeries.length > 0 && (
+        <>
+          <div className="sect" style={{ marginTop: 18 }}>
+            Marked as no longer active
+          </div>
+          <div className="sm muted" style={{ marginBottom: 8 }}>
+            Left out of the projection. If any of them is charged again it returns
+            to the list above and is reported at the top of this page.
+          </div>
+          <div style={{ borderTop: '2px solid var(--ink)' }}>
+            {model.dismissedSeries.map(({ series, override }) => (
+              <div key={override.seriesKey} className="row" style={{ alignItems: 'flex-start' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    className="sm"
+                    style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  >
+                    {override.label}
+                  </div>
+                  <div className="tiny muted tnum">
+                    {override.direction === 'in' ? 'in' : 'out'} · nothing since{' '}
+                    {override.dismissedAfter}
+                    {series === null && ' · outside the 180-day window'}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right', flex: '0 0 auto' }}>
+                  <button
+                    type="button"
+                    className="tiny muted"
+                    onClick={() => void restoreSeries(override.seriesKey)}
+                    disabled={busyKey === override.seriesKey}
+                    style={{
+                      appearance: 'none',
+                      background: 'none',
+                      border: 'none',
+                      padding: 0,
+                      font: 'inherit',
+                      textDecoration: 'underline',
+                      cursor: busyKey === override.seriesKey ? 'default' : 'pointer',
+                      opacity: busyKey === override.seriesKey ? 0.5 : 1,
+                    }}
+                    aria-label={`Put ${override.label} back on the calendar`}
+                  >
+                    {busyKey === override.seriesKey ? 'saving…' : 'put back'}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {overrideError && (
+        <div className="banner banner--red tiny" style={{ marginTop: 10 }}>
+          {overrideError}
         </div>
       )}
 
@@ -447,7 +589,19 @@ function FlowLine({ f }: { f: ExpectedFlow }) {
  * Series
  * ------------------------------------------------------------------ */
 
-function SeriesRow({ s }: { s: Series }) {
+function SeriesRow({
+  s,
+  onDismiss,
+  busy,
+}: {
+  s: Series
+  onDismiss: (s: Series) => void
+  busy: boolean
+}) {
+  // A hand-marked series has no observations to report, and saying "0 observed"
+  // next to a confident date would read as a measurement that came back empty.
+  const marked = s.events.length === 0
+
   return (
     <div className="row" style={{ alignItems: 'flex-start' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -455,9 +609,32 @@ function SeriesRow({ s }: { s: Series }) {
           {s.label}
         </div>
         <div className="tiny muted tnum">
-          {s.direction === 'in' ? 'in' : 'out'} · {cadenceLabel(s)} · {s.events.length} observed
+          {s.direction === 'in' ? 'in' : 'out'} · {cadenceLabel(s)}
+          {marked ? ' · marked by hand, not yet observed' : ` · ${s.events.length} observed`}
           {s.missedCycles > 0 && ` · ${s.missedCycles} cycle${s.missedCycles === 1 ? '' : 's'} missed`}
         </div>
+        {/* Dismissing records the last date seen, so a charge taken after it is
+            reported rather than silently suppressed. Said here, once, because
+            "no longer active" otherwise sounds like it means "hide this". */}
+        <button
+          type="button"
+          className="tiny muted"
+          onClick={() => onDismiss(s)}
+          disabled={busy}
+          style={{
+            appearance: 'none',
+            background: 'none',
+            border: 'none',
+            padding: '2px 0 0',
+            font: 'inherit',
+            textDecoration: 'underline',
+            cursor: busy ? 'default' : 'pointer',
+            opacity: busy ? 0.5 : 1,
+          }}
+          aria-label={`Mark ${s.label} as no longer active`}
+        >
+          {busy ? 'saving…' : 'no longer active'}
+        </button>
       </div>
       <div style={{ textAlign: 'right', flex: '0 0 auto' }}>
         <div className="sm tnum" style={{ color: s.direction === 'in' ? 'var(--ink)' : 'var(--steel)' }}>

@@ -241,6 +241,35 @@ export type BusinessPayerRow = {
   created_at: string
 }
 
+/**
+ * A member's standing correction to automatic cadence detection.
+ *
+ * 'dismiss' carries dismissed_after — the last date the series was seen when it
+ * was dismissed — so a later event proves the charge never actually stopped. A
+ * boolean would only mute it.
+ *
+ * 'confirm' asserts a cadence detection cannot infer yet, for an obligation with
+ * fewer than the three observations a cadence needs.
+ */
+export type RecurringOverrideRow = {
+  id: string
+  /** account_id|descriptor|direction — the identity detectSeries() assigns. */
+  series_key: string
+  account_id: string | null
+  descriptor: string
+  label: string
+  direction: 'in' | 'out'
+  action: 'dismiss' | 'confirm'
+  dismissed_after: string | null
+  cadence: 'weekly' | 'fortnightly' | 'monthly' | null
+  expected_amount: number | null
+  anchor_on: string | null
+  note: string | null
+  created_by: string | null
+  created_at: string
+  updated_at: string
+}
+
 export type BudgetLineRuleRow = {
   id: string
   plaid_prefix: string
@@ -269,6 +298,7 @@ export type Database = {
       debt_schedules: T<DebtScheduleRow>
       budget_line_rules: T<BudgetLineRuleRow>
       business_payers: T<BusinessPayerRow>
+      recurring_overrides: T<RecurringOverrideRow>
     }
     Views: {
       debt_history_weekly: {
