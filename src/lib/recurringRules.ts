@@ -219,3 +219,40 @@ export function confirmedSeries(
     })
 }
 
+
+/**
+ * Apply a member's stated day to a series that WAS detected.
+ *
+ * Detection can only report when money MOVED, and a bill's due date is not in
+ * that data. Rent posts between the 3rd and the 8th because it is paid on the
+ * 1st and takes a few days to settle; nothing in the transaction record says
+ * "the 1st", and no amount of inference will produce it.
+ *
+ * So where a member has stated the day, it wins — for the DATE only. The
+ * cadence, the amount and the history stay measured, and the row says the day
+ * was entered rather than observed. Moving the projection a few days earlier is
+ * the safe direction for a balance projection: it expects the money gone sooner
+ * than it will actually go.
+ */
+export function applyStatedDay(series: Series[], overrides: Override[], today: Date): Series[] {
+  const byKey = new Map(
+    overrides.filter((o) => o.action === 'confirm' && o.anchorOn).map((o) => [o.seriesKey, o]),
+  )
+  if (byKey.size === 0) return series
+  const todayIso = isoDate(today)
+
+  return series.map((s) => {
+    const o = byKey.get(s.key)
+    if (!o || !o.anchorOn) return s
+    if ((o.cadence ?? 'monthly') !== 'monthly') return s
+
+    const day = parseDateOnly(o.anchorOn).getDate()
+    const t = parseDateOnly(todayIso)
+    let next = clampedDay(t.getFullYear(), t.getMonth(), day)
+    // Already gone this month, so the next one is next month. Clamped, because a
+    // stated 31st has to land on the 30th in April rather than roll into May.
+    if (isoDate(next) < todayIso) next = clampedDay(t.getFullYear(), t.getMonth() + 1, day)
+
+    return { ...s, dayOfMonth: day, nextOn: isoDate(next), statedDay: day }
+  })
+}

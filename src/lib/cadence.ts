@@ -159,6 +159,14 @@ export interface Series {
   /** Modal budget line across this series' rows. Null when none is filed. */
   budgetLineId: string | null
   /**
+   * The day a member said this falls on, when they have said so.
+   *
+   * Set only by applyStatedDay(). A due date is not in the transaction record —
+   * rent posts days after it is due — so this is the one figure here that is
+   * asserted rather than measured, and the row says so.
+   */
+  statedDay?: number | null
+  /**
    * Set when this route went quiet but the SAME obligation was paid another way
    * since. Rent alternates between two accounts under two merchant spellings, so
    * each half looked abandoned while the rent itself was never once late.
@@ -565,6 +573,133 @@ function reconcileRoutes(series: Series[], todayIso: string): Series[] {
   })
 }
 
+
+
+/**
+ * Would these dates pass as a cadence? The same tests the main pass applies,
+ * factored out so a merge can check its own work.
+ */
+function isRegular(dates: string[]): boolean {
+  if (dates.length < MIN_EVENTS) return false
+  const sorted = [...dates].sort()
+  const gaps: number[] = []
+  for (let i = 1; i < sorted.length; i++) gaps.push(daysBetween(sorted[i - 1], sorted[i]))
+  if (gaps.length < 2) return false
+  const m0 = median(gaps)
+  const { cycles, missed } = perCycleGaps(gaps, m0)
+  const m1 = median(cycles)
+  if (!(m1 > 0)) return false
+  if (missed / (cycles.length + missed) > MAX_MISSED_SHARE) return false
+  const onBeat = cycles.filter((g) => Math.abs(g - m1) <= ON_BEAT * m1).length / cycles.length
+  if (onBeat < MIN_ON_BEAT) return false
+  return mad(cycles, m1) <= MAX_MAD_RATIO * m1
+}
+
+/**
+ * Fold the routes of ONE obligation into one series, before any cadence is
+ * worked out.
+ *
+ * A series is keyed account|descriptor|direction, which is the right identity
+ * for money leaving a particular account and the wrong one for a bill. The rent
+ * here alternates between two accounts and is reported under a different
+ * spelling by each, so it arrived as two series of three payments instead of one
+ * series of six — and a cadence read off half the evidence is simply worse. With
+ * three scattered posting days and no repeat among them, the modal day was
+ * whichever happened to come first, and the projection landed several days from
+ * where the money actually moves.
+ *
+ * The budget line is the only EXACT statement in the data that two differently
+ * worded charges are the same obligation, so that is the test, with the amount
+ * as a second key. Descriptor similarity is not safe: in this very data the
+ * landlord and the car insurer share their first eight characters.
+ *
+ * The merged key is derived from the budget line, NOT from whichever route paid
+ * most recently. Those alternate month to month, so a key taken from the latest
+ * route would change under a standing dismissal and silently orphan it.
+ */
+function mergeRoutes(
+  groups: Map<
+    string,
+    {
+      accountId: string
+      direction: Direction
+      names: string[]
+      merchant: string | null
+      byDay: Map<string, number>
+      budgetLines: Map<string, number>
+    }
+  >,
+): void {
+  const modalLine = (g: { budgetLines: Map<string, number> }) =>
+    [...g.budgetLines.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null
+
+  const median1 = (xs: number[]) => median(xs)
+  const amountOf = (g: { byDay: Map<string, number> }) => median1([...g.byDay.values()])
+  const lastOf = (g: { byDay: Map<string, number> }) => [...g.byDay.keys()].sort().pop() ?? ''
+
+  /** budgetLine|direction -> the keys filed under it. */
+  const buckets = new Map<string, string[]>()
+  for (const [key, g] of groups) {
+    const line = modalLine(g)
+    if (!line) continue
+    const bk = `${line}|${g.direction}`
+    buckets.set(bk, [...(buckets.get(bk) ?? []), key])
+  }
+
+  for (const [bk, keys] of buckets) {
+    if (keys.length < 2) continue
+
+    // Only routes whose amounts agree. Two unrelated charges filed against one
+    // budget line are exactly what a looser test would weld together.
+    const withAmt = keys.map((k) => ({ k, g: groups.get(k)!, amt: amountOf(groups.get(k)!) }))
+    const ref = median1(withAmt.map((x) => x.amt))
+    const same = withAmt.filter(
+      (x) => Math.abs(x.amt - ref) / Math.max(ref, 1) <= SAME_OBLIGATION_TOLERANCE,
+    )
+    if (same.length < 2) continue
+
+    /**
+     * The merge has to check its own work.
+     *
+     * Two routes that ALTERNATE are one obligation and merge into a clean
+     * monthly rhythm. Two that run CONCURRENTLY are two obligations that happen
+     * to share a budget line and an amount — two policies at the same premium,
+     * say — and welding those together produces an interleaved mess that passes
+     * no cadence test at all, so the payment disappears from the grid instead of
+     * being projected twice. Losing it entirely is the worse failure.
+     *
+     * So: merge only if the combined dates read as a cadence when the pieces did
+     * not already. Where the merge would make things worse, the routes are left
+     * alone and reconcileRoutes() still stops them double-counting.
+     */
+    const combined = [...new Set(same.flatMap((x) => [...x.g.byDay.keys()]))]
+    if (!isRegular(combined) && same.some((x) => isRegular([...x.g.byDay.keys()]))) continue
+
+    // Label and account come from the route used MOST RECENTLY — that is where
+    // the money is going out of now, and it is what a reader would recognise.
+    const newest = same.slice().sort((a, b) => lastOf(a.g).localeCompare(lastOf(b.g))).pop()!
+
+    const merged = {
+      accountId: newest.g.accountId,
+      direction: newest.g.direction,
+      names: same.flatMap((x) => x.g.names),
+      merchant: newest.g.merchant,
+      byDay: new Map<string, number>(),
+      budgetLines: new Map<string, number>(),
+    }
+    for (const x of same) {
+      for (const [d, amt] of x.g.byDay) {
+        merged.byDay.set(d, (merged.byDay.get(d) ?? 0) + amt)
+      }
+      for (const [l, n] of x.g.budgetLines) {
+        merged.budgetLines.set(l, (merged.budgetLines.get(l) ?? 0) + n)
+      }
+      groups.delete(x.k)
+    }
+    groups.set(`line:${bk}`, merged)
+  }
+}
+
 export function detectSeries(events: CadenceEvent[], opts: DetectOptions): Series[] {
   const { today, windowDays = WINDOW_DAYS, accountIds } = opts
 
@@ -624,6 +759,8 @@ export function detectSeries(events: CadenceEvent[], opts: DetectOptions): Serie
     }
   }
 
+  mergeRoutes(groups)
+
   const out: Series[] = []
 
   for (const [key, g] of groups) {
@@ -645,7 +782,7 @@ export function detectSeries(events: CadenceEvent[], opts: DetectOptions): Serie
       accountId: g.accountId,
       direction: g.direction,
       label,
-      descriptor: key.split('|')[1],
+      descriptor: key.startsWith('line:') ? key.slice(5) : key.split('|')[1],
       events: seriesEvents,
       firstOn,
       lastOn,

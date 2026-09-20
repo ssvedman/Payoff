@@ -45,7 +45,7 @@ export default function Calendar() {
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [overrideError, setOverrideError] = useState<string | null>(null)
 
-  const { dismiss, remove } = useRecurringOverrides()
+  const { dismiss, remove, confirm } = useRecurringOverrides()
   const { accounts } = useData()
 
   /** Account id to its display name, for saying where a payment actually went. */
@@ -79,6 +79,36 @@ export default function Calendar() {
       setBusyKey(null)
     },
     [dismiss, model],
+  )
+
+  /**
+   * Record the day a monthly obligation actually falls due.
+   *
+   * Stored as a 'confirm' override against the series key, which is stable: a
+   * merged obligation is keyed on its budget line, not on whichever account
+   * happened to pay it last.
+   */
+  const setSeriesDay = useCallback(
+    async (s: Series, day: number) => {
+      setBusyKey(s.key)
+      setOverrideError(null)
+      const today = new Date()
+      const anchor = isoDate(new Date(today.getFullYear(), today.getMonth(), day))
+      const err = await confirm({
+        seriesKey: s.key,
+        accountId: s.accountId || null,
+        descriptor: s.descriptor,
+        label: s.label,
+        direction: s.direction,
+        cadence: 'monthly',
+        expectedAmount: s.medianAmount,
+        anchorOn: anchor,
+      })
+      if (err) setOverrideError(err)
+      else await model.refreshOverrides()
+      setBusyKey(null)
+    },
+    [confirm, model],
   )
 
   /** Undo a dismissal — put the series back on the grid as if never dismissed. */
@@ -246,6 +276,7 @@ export default function Calendar() {
               key={s.key}
               s={s}
               onDismiss={dismissSeries}
+              onSetDay={setSeriesDay}
               busy={busyKey === s.key}
               accountName={accountName}
             />
@@ -603,17 +634,39 @@ function FlowLine({ f }: { f: ExpectedFlow }) {
  * Series
  * ------------------------------------------------------------------ */
 
+const linkButton = (busy: boolean): React.CSSProperties => ({
+  appearance: 'none',
+  background: 'none',
+  border: 'none',
+  padding: 0,
+  font: 'inherit',
+  textDecoration: 'underline',
+  cursor: busy ? 'default' : 'pointer',
+  opacity: busy ? 0.5 : 1,
+})
+
+/** 1st, 2nd, 3rd, 4th … */
+function ordinalDay(n: number): string {
+  const s2 = ['th', 'st', 'nd', 'rd']
+  const v = n % 100
+  return n + (s2[(v - 20) % 10] ?? s2[v] ?? s2[0])
+}
+
 function SeriesRow({
   s,
   onDismiss,
+  onSetDay,
   busy,
   accountName,
 }: {
   s: Series
   onDismiss: (s: Series) => void
+  onSetDay: (s: Series, day: number) => void
   busy: boolean
   accountName: (id: string) => string
 }) {
+  const [editingDay, setEditingDay] = useState(false)
+  const [dayText, setDayText] = useState(String(s.statedDay ?? s.dayOfMonth ?? 1))
   // A hand-marked series has no observations to report, and saying "0 observed"
   // next to a confident date would read as a measurement that came back empty.
   const marked = s.events.length === 0
@@ -641,6 +694,57 @@ function SeriesRow({
         {/* Dismissing records the last date seen, so a charge taken after it is
             reported rather than silently suppressed. Said here, once, because
             "no longer active" otherwise sounds like it means "hide this". */}
+        {/* The observed day is when the money POSTED, which for a bill paid on
+            the 1st is several days later. Only the person paying it knows the
+            due date, so it can be stated — and it is labelled as stated. */}
+        {s.kind === 'monthly' && (
+          <div className="tiny muted" style={{ marginTop: 2 }}>
+            {editingDay ? (
+              <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                due on the
+                <input
+                  inputMode="numeric"
+                  value={dayText}
+                  onChange={(e) => setDayText(e.target.value)}
+                  className="tnum"
+                  aria-label={`Day of the month ${s.label} is due`}
+                  style={{
+                    font: 'inherit',
+                    width: 44,
+                    padding: '2px 5px',
+                    border: '1px solid var(--line)',
+                    borderRadius: 'var(--r-control)',
+                    background: 'var(--white)',
+                    color: 'var(--ink)',
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const n = Number(dayText)
+                    if (Number.isInteger(n) && n >= 1 && n <= 31) {
+                      onSetDay(s, n)
+                      setEditingDay(false)
+                    }
+                  }}
+                  disabled={busy}
+                  style={linkButton(busy)}
+                >
+                  save
+                </button>
+                <button type="button" onClick={() => setEditingDay(false)} style={linkButton(false)}>
+                  cancel
+                </button>
+              </span>
+            ) : (
+              <button type="button" onClick={() => setEditingDay(true)} style={linkButton(false)}>
+                {s.statedDay
+                  ? `due on the ${ordinalDay(s.statedDay)} (entered)`
+                  : 'set the day it is due'}
+              </button>
+            )}
+          </div>
+        )}
         <button
           type="button"
           className="tiny muted"

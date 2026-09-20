@@ -25,6 +25,7 @@ import {
 import type { DebtScheduleRow } from './database.types'
 import {
   applyOverrides,
+  applyStatedDay,
   confirmedSeries,
   useRecurringOverrides,
   type Override,
@@ -551,7 +552,13 @@ export function useCalendar(anchor: Date, now = new Date()): CalendarModel {
      * the measured series is the better description than the asserted one.
      */
     const applied = applyOverrides(detected, overrides)
-    const series = [...applied.active, ...confirmedSeries(overrides, detected, todayMid)]
+    // A member's stated day wins over the observed posting day — see
+    // applyStatedDay(). The cadence and the amount stay measured.
+    const series = applyStatedDay(
+      [...applied.active, ...confirmedSeries(overrides, detected, todayMid)],
+      overrides,
+      todayMid,
+    )
 
     /**
      * Regular outgoings that are ALREADY on the grid as a payment due.
