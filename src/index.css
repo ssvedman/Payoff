@@ -301,8 +301,11 @@ tr:last-child td { border-bottom: none; }
   padding: 13px;
 }
 .banner--red   { background: var(--red-bg);   color: var(--red-tx); }
-.banner--amber { background: var(--amber-bg); color: var(--amber-tx); }
 .banner--green { background: var(--green-bg); color: var(--green-tx); }
+/* There is no amber banner. Amber is the current payoff target and nothing
+   else, so a banner cannot have it: a transient status wearing the one colour
+   reserved for "this is where the money goes" costs more than it conveys. */
+.banner--neutral { background: var(--neutral-bg); color: var(--neutral-tx); }
 
 .target-card {
   background: var(--ink);
@@ -670,4 +673,277 @@ tr:last-child td { border-bottom: none; }
   .acct-sub-mobile {
     display: none;
   }
+}
+
+/* ============================================================================
+   REDESIGN PRIMITIVES — redesign.html "THE SYSTEM"
+
+   The type scale is deliberately NOT the mockup's. That artboard draws a phone
+   at about 0.85 scale, so its 12.5px body would land near 10px here. The rule
+   it states is the one that matters: the same scale on desktop as on mobile,
+   more visible at once rather than bigger text.
+   ============================================================================ */
+
+:root {
+  /* The hero panel's inner rule and its recessed progress track. */
+  --ink2: #2B3644;
+  --r: 8px;
+}
+
+/* ---------- One hero per page ----------
+   Everything else on the page is smaller than this. Dark panel, so the amber
+   label on it is the only amber in view. */
+.hero {
+  background: var(--ink);
+  color: #fff;
+  border-radius: var(--r);
+  padding: 16px 18px;
+}
+/*
+   The hero's eyebrow is NOT amber by default.
+ 
+   Not every hero is a target. Home's hero is the account being attacked and
+   earns the colour; Progress's hero is "what the plan saves", which is a
+   result, and Business's is a balance. Making amber the default here quietly
+   put it on two pages that name no target, which is exactly the dilution the
+   rule exists to prevent. Ask for it with --target.
+ */
+.hero__label {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  color: #9DA9B8;
+}
+.hero__label--target { color: var(--amber); }
+.hero__figure {
+  font-size: 38px;
+  font-weight: 800;
+  letter-spacing: -.03em;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+.hero__note { color: #9DA9B8; }
+.hero__split {
+  display: flex;
+  gap: 26px;
+  margin-top: 15px;
+  padding-top: 13px;
+  border-top: 1px solid var(--ink2);
+}
+/* The hero's own progress track, which needs to read against ink rather than
+   against the page. */
+.hero .bar { background: var(--ink2); }
+
+@media (min-width: 1024px) {
+  .hero__figure { font-size: 46px; }
+}
+
+/* ---------- Surfaces ---------- */
+.stat {
+  background: var(--card);
+  border-radius: var(--r);
+  padding: 12px 14px;
+}
+.box {
+  background: var(--white);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 14px 16px;
+}
+
+/* ---------- Page title ---------- */
+.ph {
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -.02em;
+  margin: 0;
+}
+
+/* ---------- Caveats are quiet rules, never grey blocks ----------
+   A thin left border beneath the thing it qualifies. A filled panel competes
+   with the data for attention and wins, which is how a footnote ends up
+   louder than the figure it footnotes. */
+.rule {
+  font-size: 11.5px;
+  color: var(--steel);
+  line-height: 1.55;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+  margin-top: 10px;
+}
+
+/* ---------- Columns ----------
+   One column on a phone; the mockup's two and three only once there is room. */
+.g2, .g3 { display: grid; gap: 14px; }
+@media (min-width: 1024px) {
+  .g2 { grid-template-columns: 1fr 1fr; align-items: start; }
+  .g3 { grid-template-columns: repeat(3, 1fr); }
+}
+
+/* ---------- Tables: desktop gets real tables, mobile gets rows ----------
+   Amounts flush right and tabular everywhere, so columns of figures line up on
+   the decimal rather than merely being right-aligned. */
+.tbl { width: 100%; border-collapse: collapse; }
+.tbl th,
+.tbl td {
+  padding: 9px 6px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  font-size: 13px;
+}
+.tbl th {
+  font-size: 10.5px;
+  color: var(--steel);
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.tbl tr:last-child td { border-bottom: none; }
+.tbl .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+
+/* ---------- Chart legend ---------- */
+.legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--steel);
+  margin-top: 10px;
+}
+.legend span { display: flex; align-items: center; gap: 5px; }
+.sw {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+.sw--dot { width: 8px; height: 8px; border-radius: 50%; }
+
+/* ---------- Inline balance input ---------- */
+input.b {
+  width: 108px;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 13px;
+  text-align: right;
+  background: #fff;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Notification toggle ---------- */
+.tog {
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  background: var(--green);
+  position: relative;
+  flex: 0 0 auto;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.tog.off { background: var(--line); }
+.tog::after {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  top: 3px;
+  right: 3px;
+}
+.tog.off::after { right: auto; left: 3px; }
+
+/* ---------- Sidebar: the rule above Business, and Settings at the foot ---------- */
+.sidebar__divider {
+  height: 1px;
+  background: var(--line);
+  margin: 9px 10px;
+}
+.sidebar__foot {
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.sidebar__foot a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--r-control);
+  color: var(--steel);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 600;
+}
+.sidebar__foot a.on { background: var(--card); color: var(--ink); }
+.sidebar__foot i { font-style: normal; font-size: 15px; width: 18px; text-align: center; }
+
+/* ---------- The More sheet ---------- */
+.more-list { margin-top: 10px; }
+.more-row { text-decoration: none; color: inherit; }
+.more-row__icon {
+  font-style: normal;
+  width: 20px;
+  text-align: center;
+  font-size: 15px;
+  color: var(--steel);
+}
+
+/* ---------- Deviation / on-plan text ----------
+   Green is cleared or on plan. Red is a deviation. Amber is never either. */
+.is-good { color: var(--green); }
+.is-bad  { color: var(--red); }
+
+/* ---------- Width switches ----------
+
+   For content that DIFFERS by width, as opposed to merely rearranging. A real
+   table on desktop and rows on a phone are two different markups, not one
+   markup reflowed, so one of them has to be absent rather than restyled.
+
+   These are CSS rather than a matchMedia hook for the reason Sidebar.tsx gives:
+   a hook's first render happens before the query resolves, so the wrong layout
+   paints for a frame. Several pages grew their own `useWideScreen()` during the
+   redesign; those can migrate here as they are touched.
+
+   The breakpoint is 1024px, the same one the sidebar appears at, so "desktop"
+   means one thing across the whole app. */
+.desk-only { display: none; }
+@media (min-width: 1024px) {
+  .desk-only { display: block; }
+  .mob-only  { display: none; }
+}
+
+/* The Business page's pair, which lived in a <style> element inside the page
+   until the same rule was wanted in four other places. */
+.biz-wide { display: none; }
+@media (min-width: 1024px) {
+  .biz-wide   { display: block; }
+  .biz-narrow { display: none; }
+}
+
+/* A table whose headings are words rather than column labels. The calendar's
+   weekday row is Mon Tue Wed, and .tbl th's uppercasing turns it into MON TUE
+   WED, which reads as shouting rather than as a heading. */
+.tbl--plain th { text-transform: none; letter-spacing: 0; }
+
+/* A dashed legend swatch, for a dashed line. Progress tells its plan line from
+   its actual line by dash rather than by hue, because amber is the current
+   target and nothing else, and Progress names no target account. Drawn with a
+   repeating gradient so it inherits `color` and stays one element. */
+.sw--dashed {
+  background: repeating-linear-gradient(
+    to right,
+    currentColor 0 5px,
+    transparent 5px 9px
+  );
 }

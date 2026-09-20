@@ -1,9 +1,23 @@
-import { useMemo } from 'react'
+import { useMemo, type ReactNode } from 'react'
+import BusinessBars, { type BarMonth } from '../components/BusinessBars'
 import TrendChart from '../components/TrendChart'
 import { useBusinessMonths } from '../lib/businessMonths'
-import { useData, useNetWorth } from '../lib/data'
-import { type MonthBucket } from '../lib/business'
-import { money, moneyCents, parseDateOnly, signedAmount } from '../lib/format'
+import { useData, useNetWorth, type Account } from '../lib/data'
+import {
+  isCurrentMonth,
+  type CostCategory,
+  type MonthBucket,
+  type NamedTotal,
+  type PayerKey,
+} from '../lib/business'
+import {
+  MONTH_NAMES,
+  money,
+  moneyCents,
+  parseDateOnly,
+  relativeTime,
+  signedAmount,
+} from '../lib/format'
 
 /**
  * /business — what the business took in, what it spent, and what the household
@@ -17,260 +31,135 @@ import { money, moneyCents, parseDateOnly, signedAmount } from '../lib/format'
  *
  * It REPORTS. There is no advice here, no suggestion to move money, no
  * encouragement and no exclamation mark. "Business balance $412", never "you
- * should transfer money".
+ * should transfer money". The client concentration is stated; what to do about
+ * it is not.
  *
- * Colour: amber appears nowhere — it means the current payoff target and nothing
- * else. Green is not used for a series either. Every chart colour below is
- * categorical and carries identity only; every figure is var(--ink) or
- * var(--steel) unless it is a stated deviation.
+ * Colour: amber appears nowhere. It means the current payoff target and this
+ * page has no target. Green is money in and steel is money out, the one pairing
+ * used here, and it is consistent between the chart, its legend and the IN
+ * figure above it.
  *
- * Every number is computed from live rows. The build doc's figures for this
+ * Business money never re-enters household bucket maths. Nothing computed on
+ * this page reaches a household bucket, and the provider has already stripped
+ * every business row out of the household's `transactions` by `is_business`,
+ * never by owner.
+ *
+ * Every number is computed from live rows. The mockup's figures for this
  * business disagree with the database, and the database wins.
  */
 
 /**
- * Categorical series colours, in fixed order — the same five LinePie uses, so the
- * two charts on this app do not each invent a palette. Assigned by a series'
- * fixed place in its list, never by size, so a payer or a cost keeps its colour
- * as the ranking moves. Amber, green and red are absent by design: they already
- * mean the current target, on plan and off plan.
+ * The desktop and mobile splits, which the mockup draws as two different pages.
+ *
+ * These three rules belong in index.css beside .acct-sub-wide and .act-date, at
+ * the same 1024px breakpoint the shell uses. They live here because index.css is
+ * shared with seven other pages and this rebuild must not touch it. Written as
+ * CSS rather than as a matchMedia hook for the reason Sidebar.tsx gives: a class
+ * that is always in the DOM cannot flicker on first paint.
+ *
+ * The two layouts differ in substance, not only in arrangement. Desktop gets
+ * twelve bars whose month labels need the width; a phone gets the same six
+ * months as figures, because at 700 drawing units those labels land near 4px.
  */
-const SERIES_COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#4a3aa7', '#c2185b']
-const REST_COLOR = 'var(--steel)'
+/** How many months the chart and the by-month table report. */
+const SHOWN_MONTHS = 6
 
-/** How many named categories get their own colour before the rest share grey. */
-const COLOURED_CATEGORIES = 5
-
-interface Series {
-  key: string
-  label: string
-  color: string
-}
-
-interface StackRow {
-  key: string
-  label: string
-  total: number
-  parts: Record<string, number>
-  partial?: boolean
-}
+/** Below this, the balance is worth stating as a figure of its own. */
+const LOW_BALANCE = 500
 
 /**
- * Stacked bars, one per month.
+ * What to call the business at the top of the page.
  *
- * Hand-rolled rather than pulled from a library, matching TrendChart's approach.
- * Note the text nodes: inside an SVG a figure renders in the browser's default
- * serif with proportional digits unless BOTH fontFamily="inherit" and the tnum
- * class are set on the node itself — inheriting from the page does not happen.
+ * The mockup writes the trading name straight into the markup. This does not,
+ * for the same reason business.ts reads the business's own name out of
+ * payment_aliases rather than writing it in source: this repository is public,
+ * and a name typed into a file is also a rule that silently stops working when
+ * the alias behind it is edited.
+ *
+ * The aliases are bank descriptors, so most of them are references rather than
+ * names. The one wanted here reads like a name: two or more words, letters
+ * rather than digits, and none of the wording a payment descriptor carries.
+ *
+ * The fallback is a CASH account's nickname, not businessAccounts[0]. That array
+ * is `accounts.filter(is_business)` in the provider's own order, so the first
+ * entry is as likely to be the business card as the checking account, and the
+ * page would have been titled after a credit card.
  */
-function StackChart({
-  rows,
-  series,
-  caption,
-}: {
-  rows: StackRow[]
-  series: Series[]
-  caption: string
-}) {
-  const W = 320
-  const H = 154
-  const PAD = { top: 10, right: 6, bottom: 26, left: 6 }
-  const innerH = H - PAD.top - PAD.bottom
-  const innerW = W - PAD.left - PAD.right
+function businessTitle(accounts: Account[]): string {
+  const candidates = accounts
+    .flatMap((a) => a.payment_aliases ?? [])
+    .map((s) => s.trim())
+    .filter(
+      (s) =>
+        s.length >= 6 &&
+        s.length <= 40 &&
+        s.includes(' ') &&
+        /^[A-Za-z0-9 &'.-]+$/.test(s) &&
+        !/\b(payment|transfer|ending|acct|account|trace|ind name)\b/i.test(s),
+    )
+    .sort((a, b) => b.length - a.length)
 
-  const max = Math.max(...rows.map((r) => r.total), 0)
-  if (rows.length === 0 || max <= 0) {
-    return <div className="sm muted" style={{ padding: '18px 0' }}>{caption}</div>
+  const name = candidates[0]
+  if (name) {
+    return name
+      .split(' ')
+      .map((w) => (w.length > 1 ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : w))
+      .join(' ')
   }
+  const cash = accounts.find((a) => a.kind === 'checking' || a.kind === 'savings')
+  return cash?.name ?? accounts[0]?.name ?? 'Business'
+}
 
-  const slot = innerW / rows.length
-  const barW = Math.min(34, slot * 0.62)
-
-  return (
-    <div>
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        width="100%"
-        height={H}
-        role="img"
-        aria-label={`${caption}. ${rows
-          .map((r) => `${r.label} ${money(r.total)}`)
-          .join(', ')}.`}
-        style={{ display: 'block' }}
-      >
-        {/* Hairline baseline only. No gridlines competing with the data. */}
-        <line
-          x1={PAD.left}
-          y1={PAD.top + innerH}
-          x2={W - PAD.right}
-          y2={PAD.top + innerH}
-          stroke="var(--line)"
-          strokeWidth="1"
-        />
-
-        {rows.map((r, i) => {
-          const cx = PAD.left + slot * i + slot / 2
-          let y = PAD.top + innerH
-          return (
-            <g key={r.key}>
-              {series.map((s) => {
-                const v = r.parts[s.key] ?? 0
-                if (v <= 0) return null
-                const h = (v / max) * innerH
-                y -= h
-                return (
-                  <rect
-                    key={s.key}
-                    x={cx - barW / 2}
-                    y={y}
-                    width={barW}
-                    height={h}
-                    fill={s.color}
-                  >
-                    <title>{`${r.label} · ${s.label}: ${money(v)}`}</title>
-                  </rect>
-                )
-              })}
-              <text
-                x={cx}
-                y={H - 14}
-                fontSize="10"
-                fill="var(--steel)"
-                textAnchor="middle"
-                fontFamily="inherit"
-                className="tnum"
-              >
-                {r.label.slice(0, 3)}
-              </text>
-              {r.partial && (
-                <text
-                  x={cx}
-                  y={H - 3}
-                  fontSize="9"
-                  fill="var(--steel)"
-                  textAnchor="middle"
-                  fontFamily="inherit"
-                >
-                  part
-                </text>
-              )}
-            </g>
-          )
-        })}
-      </svg>
-
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 14px', marginTop: 8 }}>
-        {series.map((s) => (
-          <span key={s.key} className="tiny" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span
-              aria-hidden="true"
-              style={{ width: 10, height: 10, borderRadius: 3, background: s.color, display: 'block' }}
-            />
-            {s.label}
-          </span>
-        ))}
-      </div>
-    </div>
-  )
+/** "September · day 22" — the period every figure on this page is read against. */
+function periodLabel(now = new Date()): string {
+  return `${MONTH_NAMES[now.getMonth()]} · day ${now.getDate()}`
 }
 
 /**
- * One bar per month above or below a zero line.
+ * Which month a breakdown covers, named on the box itself.
  *
- * Deliberately one neutral colour for both directions. The sign is carried by
- * which side of the axis the bar sits on, which is unambiguous; colouring a
- * negative month red would call it a deviation, and the business has no plan to
- * deviate from.
+ * A running month is labelled "so far", because a table of 22 days beside a
+ * heading that says nothing would read as a finished month.
  */
-function NetChart({ rows }: { rows: MonthBucket[] }) {
-  const W = 320
-  const H = 132
-  const PAD = { top: 12, right: 6, bottom: 26, left: 6 }
-  const innerH = H - PAD.top - PAD.bottom
-  const innerW = W - PAD.left - PAD.right
-
-  const max = Math.max(...rows.map((r) => Math.abs(r.net)), 1)
-  const zeroY = PAD.top + innerH / 2
-  const half = innerH / 2
-  const slot = innerW / Math.max(rows.length, 1)
-  const barW = Math.min(30, slot * 0.58)
-
-  if (rows.length === 0) return <div className="sm muted">Nothing recorded yet.</div>
-
-  return (
-    <svg
-      viewBox={`0 0 ${W} ${H}`}
-      width="100%"
-      height={H}
-      role="img"
-      aria-label={`Money in less money out, by month. ${rows
-        .map((r) => `${r.label} ${signedAmount(r.net, money)}`)
-        .join(', ')}.`}
-      style={{ display: 'block' }}
-    >
-      <line x1={PAD.left} y1={zeroY} x2={W - PAD.right} y2={zeroY} stroke="var(--line)" strokeWidth="1" />
-      {rows.map((r, i) => {
-        const cx = PAD.left + slot * i + slot / 2
-        const h = (Math.abs(r.net) / max) * half
-        // A month that moved almost nothing still needs to be visible as a mark
-        // rather than disappearing into the axis.
-        const drawn = Math.max(h, 1.5)
-        return (
-          <g key={r.key}>
-            <rect
-              x={cx - barW / 2}
-              y={r.net >= 0 ? zeroY - drawn : zeroY}
-              width={barW}
-              height={drawn}
-              fill={REST_COLOR}
-            >
-              <title>{`${r.longLabel}: ${signedAmount(r.net, moneyCents)}`}</title>
-            </rect>
-            <text
-              x={cx}
-              y={H - 10}
-              fontSize="10"
-              fill="var(--steel)"
-              textAnchor="middle"
-              fontFamily="inherit"
-              className="tnum"
-            >
-              {r.label.slice(0, 3)}
-            </text>
-          </g>
-        )
-      })}
-    </svg>
-  )
+function periodOf(month: MonthBucket | null, current: boolean): string {
+  if (!month) return 'no month on record'
+  return current ? `${month.longLabel} so far` : month.longLabel
 }
 
-/** A label/figure pair on its own line, the shape the rest of the app uses. */
-function Line({
-  label,
-  value,
-  note,
-  strong,
-}: {
-  label: string
-  value: string
-  note?: string
-  strong?: boolean
-}) {
+/** A caption and a figure in a soft card, as the three-across desktop row wants them. */
+function Stat({ label, value, good }: { label: string; value: string; good?: boolean }) {
   return (
-    <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
-      <div className="sm" style={{ flex: 1 }}>
-        {label}
-        {note && <div className="tiny muted">{note}</div>}
-      </div>
-      <div className="tnum sm" style={strong ? { fontWeight: 700 } : undefined}>
+    <div className="stat">
+      <div className="caps">{label}</div>
+      <div
+        className={`tnum${good ? ' is-good' : ''}`}
+        style={{ fontSize: 24, fontWeight: 800, marginTop: 2, lineHeight: 1.15 }}
+      >
         {value}
       </div>
     </div>
   )
 }
 
+/**
+ * A heading inside a box, with the period it covers beneath it.
+ *
+ * `.sect` carries a top margin a box does not want, so it is zeroed here rather
+ * than a second heading class being invented.
+ */
+function BoxTitle({ children, sub }: { children: ReactNode; sub?: ReactNode }) {
+  return (
+    <div style={{ marginBottom: 7 }}>
+      <div className="sect" style={{ margin: 0 }}>
+        {children}
+      </div>
+      {sub && <div className="tiny muted">{sub}</div>}
+    </div>
+  )
+}
+
 export default function Business() {
-  const { businessAccounts, loading: dataLoading, error: dataError } = useData()
+  const { businessAccounts, lastSyncedAt, loading: dataLoading, error: dataError } = useData()
   const { debtTotal } = useNetWorth()
   const view = useBusinessMonths()
   const summary = view.summary
@@ -278,9 +167,10 @@ export default function Business() {
   /**
    * The business's cash, and the business's debt, kept apart.
    *
-   * `checking` in the shared provider is household-only now, so the 5star balance
-   * has to come from businessAccounts — the same rule in reverse: business money
-   * never enters household maths, and household screens never show this figure.
+   * `checking` in the shared provider is household-only now, so the business
+   * balance has to come from businessAccounts — the same rule in reverse:
+   * business money never enters household maths, and household screens never
+   * show this figure.
    */
   const cash = useMemo(
     () => businessAccounts.filter((a) => a.kind === 'checking' || a.kind === 'savings'),
@@ -292,25 +182,57 @@ export default function Business() {
   const cardTotal = cards.reduce((s, a) => s + Math.max(0, a.balance), 0)
   const cashAsOf = cash.map((a) => a.balanceAsOf).filter(Boolean).sort().pop() ?? null
 
-  const thisMonth = useMemo(() => {
+  const title = useMemo(() => businessTitle(businessAccounts), [businessAccounts])
+
+  /**
+   * The month the stat cards and both breakdown boxes report.
+   *
+   * The latest month with rows on it, which is the current month whenever
+   * anything has been recorded this month. Falling back to the previous one
+   * rather than reporting zeroes matters on the first of the month: a business
+   * that has not been paid yet today is not a business with no revenue, and the
+   * page says which month it is showing when it is not this one.
+   */
+  const focus: MonthBucket | null = useMemo(() => {
     if (!summary || summary.months.length === 0) return null
-    const now = new Date()
-    const key = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-    return summary.months.find((m) => m.key === key) ?? null
+    return summary.months[summary.months.length - 1]
   }, [summary])
+
+  const focusIsCurrent = focus !== null && isCurrentMonth(focus.key)
+
+  /** The last six months, oldest first. The chart and the table read the same six. */
+  const recent = useMemo(
+    () => (summary ? summary.months.slice(-SHOWN_MONTHS) : []),
+    [summary],
+  )
+
+  const bars: BarMonth[] = useMemo(
+    () =>
+      recent.map((m) => ({
+        key: m.key,
+        label: m.label,
+        longLabel: m.longLabel,
+        moneyIn: m.moneyIn,
+        moneyOut: m.moneyOut,
+        current: isCurrentMonth(m.key),
+        partial: m.partial,
+      })),
+    [recent],
+  )
 
   if (dataLoading || view.loading) {
     return (
       <div className="page">
-        <div className="sect">Business</div>
-        {/* The same shape the loaded page has — a headline panel, then a chart
-            beside its figures — so the page does not reflow around the reader
+        {/* The same shape the loaded page has: a header, a row of figures, then
+            a chart above two boxes. The page does not reflow around the reader
             when the rows land. */}
-        <div className="skeleton" style={{ height: 132, marginBottom: 20 }} aria-label="Loading" />
-        <div className="dk-cols dk-cols--chart">
-          <div className="skeleton" style={{ height: 132 }} aria-hidden="true" />
-          <div className="skeleton" style={{ height: 132 }} aria-hidden="true" />
+        <div className="skeleton" style={{ height: 34, width: 220, marginTop: 8 }} aria-label="Loading" />
+        <div className="g3" style={{ marginTop: 14 }}>
+          <div className="skeleton" style={{ height: 66 }} aria-hidden="true" />
+          <div className="skeleton" style={{ height: 66 }} aria-hidden="true" />
+          <div className="skeleton" style={{ height: 66 }} aria-hidden="true" />
         </div>
+        <div className="skeleton" style={{ height: 170, marginTop: 14 }} aria-hidden="true" />
       </div>
     )
   }
@@ -319,8 +241,10 @@ export default function Business() {
   if (error) {
     return (
       <div className="page">
-        <div className="sect">Business</div>
-        <div className="banner banner--red sm">Could not load the business record. {error}</div>
+        <div className="ph">Business</div>
+        <div className="rule" style={{ marginTop: 10 }}>
+          Could not load the business record. {error}
+        </div>
       </div>
     )
   }
@@ -328,83 +252,142 @@ export default function Business() {
   if (businessAccounts.length === 0 || !summary) {
     return (
       <div className="page">
-        <div className="sect">Business</div>
-        <div className="sm muted">No business accounts are linked.</div>
+        <div className="ph">Business</div>
+        <div className="sm muted" style={{ marginTop: 8 }}>
+          No business accounts are linked.
+        </div>
       </div>
     )
   }
 
+  const inValue = focus ? money(focus.moneyIn) : money(0)
+  const outValue = focus ? money(focus.moneyOut) : money(0)
+  const whereRows = focus ? whereItGoes(focus, summary.categories) : []
+  const clientRows = focus ? revenueByClient(focus, summary.payers) : []
+  const concentration = clientRows.length > 0 ? concentrationOf(clientRows) : null
+
+  const accountLine = (
+    <div className="tiny muted">
+      {cash.map((a) => a.name).join(', ') || 'no cash account'}
+      {cashAsOf &&
+        ` · as of ${parseDateOnly(cashAsOf).toLocaleDateString('en-US', {
+          day: 'numeric',
+          month: 'short',
+        })}`}
+    </div>
+  )
+
   return (
     <div className="page">
+
       {/* ---------------------------------------------------------------- */}
       {/* Header                                                            */}
       {/* ---------------------------------------------------------------- */}
-      <div className="card-panel" style={{ marginTop: 8 }}>
-        <div className="caps">BUSINESS BALANCE</div>
-        <div className="tnum" style={{ fontSize: 30, fontWeight: 700, lineHeight: 1.15, marginTop: 2 }}>
-          {moneyCents(cashTotal)}
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'baseline',
+          gap: 12,
+          marginTop: 8,
+          marginBottom: 13,
+        }}
+      >
+        <div>
+          <div className="ph">{title}</div>
+          {/* "day 22" is a figure like any other, so it is tabular too. A
+              proportional 1 here shifts the whole line as the month runs. */}
+          <div className="sm muted tnum">{periodLabel()}</div>
         </div>
-        <div className="tiny muted">
-          {cash.map((a) => a.name).join(', ') || 'no cash account'}
-          {cashAsOf && ` · as of ${parseDateOnly(cashAsOf).toLocaleDateString('en-US', { day: 'numeric', month: 'short' })}`}
+        <div className="tiny muted tnum" style={{ whiteSpace: 'nowrap' }}>
+          {lastSyncedAt ? `synced ${relativeTime(lastSyncedAt)}` : 'never synced'}
         </div>
-
-        {thisMonth ? (
-          <div
-            style={{
-              display: 'flex',
-              gap: 14,
-              marginTop: 14,
-              paddingTop: 12,
-              borderTop: '1px solid var(--line)',
-            }}
-          >
-            <div style={{ flex: 1 }}>
-              <div className="caps">IN</div>
-              <div className="tnum sm" style={{ fontWeight: 700 }}>{moneyCents(thisMonth.moneyIn)}</div>
-            </div>
-            <div style={{ flex: 1 }}>
-              <div className="caps">OUT</div>
-              <div className="tnum sm" style={{ fontWeight: 700 }}>{moneyCents(thisMonth.moneyOut)}</div>
-            </div>
-            <div style={{ flex: 1 }}>
-              <div className="caps">NET</div>
-              <div className="tnum sm" style={{ fontWeight: 700 }}>
-                {signedAmount(thisMonth.net, moneyCents)}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="tiny muted" style={{ marginTop: 12 }}>
-            Nothing recorded on a business account this month.
-          </div>
-        )}
-        {thisMonth && (
-          <div className="tiny muted" style={{ marginTop: 8 }}>
-            {thisMonth.longLabel} so far. The month is still running.
-          </div>
-        )}
       </div>
 
-      {/*
-        The one flag on this page. It states a fact and stops — no suggestion
-        about what to do with it. Red because a balance below the floor is a
-        deviation; the wording carries no judgement.
-      */}
-      {cashTotal < 500 && (
-        <div className="banner banner--red sm tnum" style={{ marginTop: 12 }}>
-          Business balance is {moneyCents(cashTotal)}, below $500.
+      {/* ---------------------------------------------------------------- */}
+      {/* The balance, and the month's two sides                            */}
+      {/* ---------------------------------------------------------------- */}
+      <div className="biz-wide">
+        <div className="g3">
+          <div className="stat">
+            <div className="caps">BALANCE</div>
+            <div
+              className="tnum"
+              style={{ fontSize: 24, fontWeight: 800, marginTop: 2, lineHeight: 1.15 }}
+            >
+              {money(cashTotal)}
+            </div>
+            {accountLine}
+          </div>
+          <Stat label="IN THIS MONTH" value={inValue} good />
+          <Stat label="OUT" value={outValue} />
+        </div>
+      </div>
+
+      <div className="biz-narrow">
+        {/* The one dominant figure on the page, stated in the page's own colour
+            at the page's largest size rather than in the ink hero panel. The
+            business balance is an observation, not a target, and this page has
+            no plan to measure anything against. */}
+        <div
+          className="tnum"
+          style={{ fontSize: 34, fontWeight: 800, letterSpacing: '-.03em', lineHeight: 1.05 }}
+        >
+          {money(cashTotal)}
+        </div>
+        <div className="sm muted">in the account</div>
+        {accountLine}
+        <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+          <div className="stat" style={{ flex: 1 }}>
+            <div className="caps">IN</div>
+            <div className="tnum is-good" style={{ fontSize: 18, fontWeight: 800, marginTop: 2 }}>
+              {inValue}
+            </div>
+          </div>
+          <div className="stat" style={{ flex: 1 }}>
+            <div className="caps">OUT</div>
+            <div className="tnum" style={{ fontSize: 18, fontWeight: 800, marginTop: 2 }}>
+              {outValue}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {focus && !focusIsCurrent && (
+        <div className="rule">
+          Nothing has been recorded on a business account this month. The two figures above are{' '}
+          {focus.longLabel}.
+        </div>
+      )}
+
+      {!focus && (
+        <div className="rule">
+          No business transaction has been recorded in the window this page reads. The balance is
+          still the bank's.
         </div>
       )}
 
       {/*
-        Said in words because no chart can say it. The Amazon Business card is a
-        business debt AND one of the accounts in the household payoff queue,
-        so the same balance appears on two screens. Without this line a reader who
+        A fact, and then a full stop. A balance below the floor is worth stating
+        as a figure; what to do with it is not this page's business.
+      */}
+      {cashTotal < LOW_BALANCE && (
+        <div className="rule">
+          {/* Ink, not red. Below the floor is worth stating; it is not a
+              deviation from a plan this page does not hold. */}
+          The balance is <span className="tnum" style={{ fontWeight: 700 }}>{moneyCents(cashTotal)}</span>, below{' '}
+          <span className="tnum">{money(LOW_BALANCE)}</span>.
+        </div>
+      )}
+
+      {/*
+        Said in words because no chart can say it. The business card is a
+        business debt AND one of the accounts in the household payoff queue, so
+        the same balance appears on two screens. Without this line a reader who
         has seen both would reasonably conclude the household owes it twice.
       */}
       {cardTotal > 0 && (
-        <div className="tiny muted" style={{ marginTop: 12 }}>
+        <div className="rule">
           <span className="tnum">{moneyCents(cardTotal)}</span> on the business card
           {cards.length > 1 ? 's' : ''} is also inside the household payoff queue and inside the{' '}
           <span className="tnum">{money(debtTotal)}</span> total debt. It is one balance shown in two
@@ -413,44 +396,66 @@ export default function Business() {
       )}
 
       {/* ---------------------------------------------------------------- */}
-      {/* Month by month                                                    */}
+      {/* In and out, by month                                              */}
       {/* ---------------------------------------------------------------- */}
-      <div className="sect">Month by month</div>
-      {/*
-        Chart beside its own figures, at >=1024px. The left column is fixed at
-        the chart's native drawing width: NetChart and StackChart both use a
-        320-unit viewBox and centre themselves in whatever box they are given, so
-        a wider column adds dead space rather than detail. Below 1024px this is
-        an ordinary div and the chart sits above its table exactly as before.
-      */}
-      <div className="dk-cols dk-cols--chart">
-      <NetChart rows={summary.months} />
+      <div className="biz-wide">
+        <div className="box" style={{ marginTop: 15 }}>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'baseline',
+              gap: 12,
+              marginBottom: 10,
+            }}
+          >
+            <BoxTitle>In and out, by month</BoxTitle>
+            {summary.breakEvenRun >= 3 && (
+              <div className="tiny muted">
+                net within <span className="tnum">{money(summary.breakEvenBand)}</span> of zero for{' '}
+                <span className="tnum">{summary.breakEvenRun}</span> months
+              </div>
+            )}
+          </div>
+          <BusinessBars months={bars} />
+        </div>
+      </div>
 
-      <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 10 }}>
-        <thead>
-          <tr className="caps">
-            <th style={{ textAlign: 'left', paddingBottom: 6 }}>Month</th>
-            <th style={{ textAlign: 'right', paddingBottom: 6 }}>In</th>
-            <th style={{ textAlign: 'right', paddingBottom: 6 }}>Out</th>
-            <th style={{ textAlign: 'right', paddingBottom: 6 }}>Net</th>
-          </tr>
-        </thead>
-        <tbody>
-          {summary.months.map((m) => (
-            <tr key={m.key} style={{ borderTop: '1px solid var(--line)' }}>
-              <td className="sm" style={{ padding: '8px 0' }}>
-                {m.label}
-                {m.partial && <span className="tiny muted"> · part month</span>}
-              </td>
-              <td className="tnum sm" style={{ textAlign: 'right' }}>{money(m.moneyIn)}</td>
-              <td className="tnum sm" style={{ textAlign: 'right' }}>{money(m.moneyOut)}</td>
-              <td className="tnum sm" style={{ textAlign: 'right', fontWeight: 700 }}>
-                {signedAmount(m.net, money)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="biz-narrow">
+        <div className="sect">Net, by month</div>
+        <table className="tbl">
+          <tbody>
+            {recent.map((m) => (
+              <tr key={m.key}>
+                <td style={isCurrentMonth(m.key) ? { fontWeight: 700 } : undefined}>
+                  {m.label}
+                  {m.partial && <span className="tiny muted"> {'·'} part</span>}
+                  {isCurrentMonth(m.key) && <span className="tiny muted"> {'·'} so far</span>}
+                </td>
+                {/*
+                  No colour. Green means on plan and red means a deviation, and
+                  the business has no plan to deviate from: this page exists to
+                  observe, not to grade. A month that ended down is a fact about
+                  the month, not a failure against a target that was never set.
+
+                  Direction is carried by an arrow and by the sign the figure
+                  already has, which says the same thing without borrowing a
+                  meaning from the household pages. The desktop chart makes the
+                  point a third way, by which of the two bars is taller.
+                */}
+                <td
+                  className="num tnum"
+                  style={isCurrentMonth(m.key) ? { fontWeight: 700 } : undefined}
+                >
+                  <span className="muted" aria-hidden="true">
+                    {m.net >= 0 ? '↑' : '↓'}{' '}
+                  </span>
+                  {signedAmount(m.net, money)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
       {/*
@@ -460,206 +465,324 @@ export default function Business() {
         Derived every render, so it stays true as months are added.
       */}
       {summary.breakEvenRun >= 3 && (
-        <div className="sm" style={{ marginTop: 12 }}>
+        <div className="rule">
           The last <span className="tnum">{summary.breakEvenRun}</span> complete months each ended
           within <span className="tnum">{moneyCents(summary.breakEvenBand)}</span> of break-even, on
           an average <span className="tnum">{money(summary.runThroughput)}</span> a month coming in.
-          <div className="tiny muted" style={{ marginTop: 4 }}>
-            Costs and the draw together take close to whatever arrives, so the closing balance
-            carries little from one month to the next.
-          </div>
+          Costs and the draw together take close to whatever arrives, so the closing balance carries
+          little from one month to the next.
         </div>
       )}
 
       {/* ---------------------------------------------------------------- */}
-      {/* Revenue                                                           */}
+      {/* Who pays, and where it goes                                       */}
       {/* ---------------------------------------------------------------- */}
-      <div className="sect">Revenue, by payer</div>
-      <div className="dk-cols dk-cols--chart">
-      <StackChart
-        caption="Revenue by month, split by payer"
-        series={summary.payers
-          .filter((p) => p.total > 0)
-          .map((p, i) => ({ key: p.key, label: p.label, color: SERIES_COLORS[i] ?? REST_COLOR }))}
-        rows={summary.months.map((m) => ({
-          key: m.key,
-          label: m.label,
-          total: m.revenue,
-          partial: m.partial,
-          parts: m.revenueByPayer as unknown as Record<string, number>,
-        }))}
-      />
+      <div className="g2" style={{ marginTop: 15 }}>
+        <div className="box">
+          <BoxTitle sub={periodOf(focus, focusIsCurrent)}>Revenue by client</BoxTitle>
 
-      <div style={{ marginTop: 10 }}>
-        {summary.payers
-          .filter((p) => p.total > 0)
-          .map((p) => (
-            <Line
-              key={p.key}
-              label={p.label}
-              note={p.descriptor}
-              value={money(p.total)}
-            />
-          ))}
-        <Line label="Total revenue" value={money(summary.totals.revenue)} strong />
-      </div>
-      </div>
+          {clientRows.length === 0 ? (
+            <div className="sm muted">No client payment is recorded for this month.</div>
+          ) : (
+            <table className="tbl">
+              <tbody>
+                {clientRows.map((r) => (
+                  <tr key={r.key}>
+                    <td className={r.isOther ? 'muted' : undefined}>
+                      {r.label}
+                      {r.note && <span className="tiny muted"> {r.note}</span>}
+                    </td>
+                    <td className="num">{money(r.total)}</td>
+                    <td className="num tiny muted" style={{ width: 44 }}>
+                      {r.share}%
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
 
-      {/*
-        Stated because the chart cannot: money arriving on the business account is
-        not all revenue. The household funds the business too, and those rows sit
-        under the same TRANSFER_IN category as everything else.
-      */}
-      {summary.totals.fromHousehold > 0 && (
-        <div className="tiny muted" style={{ marginTop: 8 }}>
-          A further <span className="tnum">{moneyCents(summary.totals.fromHousehold)}</span> arrived
-          from household accounts over this window. That is the household funding the business, so it
-          is counted separately from revenue.
+          {concentration && (
+            <div className="rule">
+              <span className="tnum">{concentration.clients}</span>{' '}
+              {concentration.clients === 1 ? 'client accounts' : 'clients account'} for{' '}
+              <span className="tnum">{concentration.share}%</span> of revenue.
+            </div>
+          )}
+
+          {/*
+            Stated because the table cannot: money arriving on the business
+            account is not all revenue. The household funds the business too, and
+            those rows sit under the same TRANSFER_IN category as everything else.
+          */}
+          {focus && focus.fromHousehold > 0 && (
+            <div className="rule">
+              A further <span className="tnum">{moneyCents(focus.fromHousehold)}</span> arrived from
+              household accounts. That is the household funding the business, so it is counted
+              separately from revenue.
+            </div>
+          )}
+
+          {focus && focus.refunds > 0 && (
+            <div className="rule">
+              <span className="tnum">{moneyCents(focus.refunds)}</span> of refunds came back and is
+              counted as money in, not as a negative cost.
+            </div>
+          )}
+
+          {/*
+            The other half of the untracked-account pair, and the reason it is
+            stated rather than netted. Money arriving from an account this app
+            does not track is not revenue: nobody paid for work. Netting it
+            against the money that went out to the same place would report one
+            movement that never happened, which is why business.ts keeps the two
+            legs apart.
+          */}
+          {focus && focus.fromOutside > 0 && (
+            <div className="rule">
+              <span className="tnum">{moneyCents(focus.fromOutside)}</span> came back from an account
+              this app does not track. It is counted as money in, not as revenue.
+            </div>
+          )}
         </div>
-      )}
 
-      {/* ---------------------------------------------------------------- */}
-      {/* Costs                                                             */}
-      {/* ---------------------------------------------------------------- */}
-      <div className="sect">Costs, by category</div>
-      <div className="dk-cols dk-cols--chart">
-      <StackChart
-        caption="Costs by month, split by category"
-        series={summary.categories
-          .filter((c) => c.total > 0)
-          .map((c, i) => ({
-            key: i < COLOURED_CATEGORIES ? c.key : 'rest',
-            label: i < COLOURED_CATEGORIES ? c.label : 'Everything else',
-            color: i < COLOURED_CATEGORIES ? SERIES_COLORS[i] : REST_COLOR,
-          }))
-          // The tail shares one grey slice, so it appears once in the legend.
-          .filter((s, i, all) => all.findIndex((x) => x.key === s.key) === i)}
-        rows={summary.months.map((m) => {
-          const parts: Record<string, number> = { rest: 0 }
-          summary.categories
-            .filter((c) => c.total > 0)
-            .forEach((c, i) => {
-              const v = m.costsByCategory[c.key] ?? 0
-              if (i < COLOURED_CATEGORIES) parts[c.key] = v
-              else parts.rest += v
-            })
-          return { key: m.key, label: m.label, total: m.costs, partial: m.partial, parts }
-        })}
-      />
+        <div className="box">
+          <BoxTitle sub={periodOf(focus, focusIsCurrent)}>Where it goes</BoxTitle>
 
-      <div style={{ marginTop: 10 }}>
-        {summary.categories
-          .filter((c) => c.total > 0)
-          .map((c) => (
-            <Line key={c.key} label={c.label} value={money(c.total)} />
-          ))}
-        <Line label="Total costs" value={money(summary.totals.costs)} strong />
-      </div>
-      </div>
+          {whereRows.length === 0 ? (
+            <div className="sm muted">Nothing left a business account in this month.</div>
+          ) : (
+            <table className="tbl">
+              <tbody>
+                {whereRows.map((r) => (
+                  <tr key={r.key}>
+                    <td>
+                      {r.label}
+                      {r.note && <span className="tiny muted"> {r.note}</span>}
+                    </td>
+                    <td className="num">{money(r.total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
 
-      {/*
-        The reconciliation, stated. Seven named categories cover only part of this
-        spend — Amazon, Walmart and Sam's between them run past anything but
-        labour — so a chart of seven would understate costs by roughly a third.
-        Every cost lands in exactly one category above, and this line is the proof
-        rather than the promise.
-      */}
-      <div className="tiny muted" style={{ marginTop: 8 }}>
-        {Math.abs(summary.categoryResidual) < 0.01 ? (
-          <>
-            The categories above add to{' '}
-            <span className="tnum">{moneyCents(summary.totals.costs)}</span>, which is every cost in
-            this window. Nothing is left out of the breakdown.
-          </>
-        ) : (
-          <>
-            The categories above add to{' '}
-            <span className="tnum">
-              {moneyCents(summary.totals.costs + summary.categoryResidual)}
-            </span>{' '}
-            against <span className="tnum">{moneyCents(summary.totals.costs)}</span> of costs — a
-            difference of <span className="tnum">{moneyCents(summary.categoryResidual)}</span>.
-          </>
-        )}
-        {summary.totals.refunds > 0 && (
-          <>
-            {' '}
-            <span className="tnum">{moneyCents(summary.totals.refunds)}</span> of refunds came back
-            and is counted as money in, not as a negative cost.
-          </>
-        )}
-      </div>
+          {/*
+            Two things a reader would otherwise get wrong, and both cost real
+            money.
+          */}
+          {focus && focus.draw > 0 && (
+            <div className="rule">
+              The draw is counted from the business side only. Every transfer to household checking
+              also appears on the household side as an arriving transfer already bucketed as income,
+              and adding both legs would double it. The household side is also incomplete: money that
+              paid a household card directly, or reached a person by Zelle, never touched household
+              checking and would be missing from it entirely.
+            </div>
+          )}
 
-      {/* ---------------------------------------------------------------- */}
-      {/* The draw                                                          */}
-      {/* ---------------------------------------------------------------- */}
-      <div className="sect">The draw</div>
-      <div className="dk-cols dk-cols--chart">
-      <StackChart
-        caption="Business money reaching the household, by month"
-        series={[{ key: 'draw', label: 'To the household', color: SERIES_COLORS[3] }]}
-        rows={summary.months.map((m) => ({
-          key: m.key,
-          label: m.label,
-          total: m.draw,
-          partial: m.partial,
-          parts: { draw: m.draw },
-        }))}
-      />
+          {/*
+            Why "an account not tracked here" is a line of its own rather than
+            part of the draw. The descriptor names a mask that belongs to none of
+            our accounts, so the money genuinely left the business but did not
+            reach the household. Calling it a draw would overstate what the
+            household received; dropping it would lose the money from the page
+            with nothing on screen to say so.
+          */}
+          {focus && focus.toOutside > 0 && (
+            <div className="rule">
+              <span className="tnum">{moneyCents(focus.toOutside)}</span> went to an account this app
+              does not track. It left the business, so it is listed above, but it is not a draw: it
+              never reached a household account.
+            </div>
+          )}
 
-      <div style={{ marginTop: 10 }}>
-        {summary.drawDestinations.map((d) => (
-          <Line key={d.label} label={d.label} value={money(d.total)} />
-        ))}
-        <Line label="Total drawn" value={money(summary.totals.draw)} strong />
-      </div>
-      </div>
+          {focus && focus.internalOut > 0 && (
+            <div className="rule">
+              <span className="tnum">{moneyCents(focus.internalOut)}</span> moved from the business's
+              checking to its own card. It is not listed above, because the purchases it settles are
+              already counted as costs.
+            </div>
+          )}
 
-      {/*
-        Two things a reader would otherwise get wrong, and both cost real money.
-      */}
-      <div className="tiny muted" style={{ marginTop: 8 }}>
-        Counted from the business side only. Every transfer to household checking also appears on the
-        household side as an arriving transfer already bucketed as income, and adding both legs would
-        double the draw. The household side is also incomplete — money that paid a household card
-        directly, or reached a person by Zelle, never touched household checking and would be missing
-        from it entirely.
-      </div>
-
-      {summary.outside.length > 0 && (
-        <div className="tiny muted" style={{ marginTop: 8 }}>
-          {summary.outside.map((o) => (
-            <div key={o.label} style={{ marginTop: 2 }}>
-              {o.out > 0 && (
+          {/*
+            The reconciliation, stated rather than promised. Every dollar out
+            lands in exactly one line above, which is what makes the table an
+            answer to "where does it go" instead of a sample of it. Kept as a
+            derived comparison so a drift shows its size rather than going
+            unnoticed.
+          */}
+          {focus && whereRows.length > 0 && (
+            <div className="rule">
+              {Math.abs(sumRows(whereRows) - (focus.moneyOut - focus.internalOut)) < 0.01 ? (
                 <>
-                  <span className="tnum">{moneyCents(o.out)}</span> went to {o.label}. Not counted as
-                  a draw, because it did not reach an account this app tracks.{' '}
+                  The lines above add to{' '}
+                  <span className="tnum">{moneyCents(sumRows(whereRows))}</span>, which is everything
+                  that left the account this month
+                  {focus.internalOut > 0 && ' other than the transfer to its own card'}. Nothing is
+                  left out of the breakdown.
                 </>
-              )}
-              {o.in > 0 && (
+              ) : (
                 <>
-                  <span className="tnum">{moneyCents(o.in)}</span> came back from {o.label}, and is
-                  not counted as revenue.
+                  The lines above add to{' '}
+                  <span className="tnum">{moneyCents(sumRows(whereRows))}</span> against{' '}
+                  <span className="tnum">{moneyCents(focus.moneyOut - focus.internalOut)}</span> that
+                  left the account.
                 </>
               )}
             </div>
-          ))}
+          )}
         </div>
-      )}
+      </div>
 
       {/* ---------------------------------------------------------------- */}
-      {/* Balance trend                                                     */}
+      {/* Balance readings                                                  */}
       {/* ---------------------------------------------------------------- */}
       <div className="sect">Balance readings</div>
       <BalanceReadings readings={view.cashReadings} />
 
-      <div className="tiny muted" style={{ marginTop: 14 }}>
+      <div className="rule" style={{ marginTop: 16 }}>
         Business rows never enter a household budget bucket, and nothing on this page is part of the
         household's income, spending or payoff maths.
       </div>
     </div>
   )
 }
+
+// ---------------------------------------------------------------------------
+// The two breakdown tables
+// ---------------------------------------------------------------------------
+
+interface ClientRow {
+  key: string
+  label: string
+  total: number
+  /** Whole percent of the month's revenue. */
+  share: number
+  isOther: boolean
+  /**
+   * What the row actually matched on, shown for "Other payers" only.
+   *
+   * Without it "Other payers" reads as a client called Other. It is the deposits
+   * whose ACH company name matched no payer rule, which is exactly the figure a
+   * reader needs to be able to interpret before trusting the percentages above
+   * it.
+   */
+  note?: string
+}
+
+/**
+ * Who paid, this month, largest first.
+ *
+ * Clients whose total is zero are dropped rather than listed at $0: a client
+ * that invoices monthly and has not yet been paid is not a client who paid
+ * nothing. "Other payers" is kept whenever it is non-zero, because a deposit no
+ * rule matched is exactly the figure a reader needs to see.
+ */
+function revenueByClient(
+  month: MonthBucket,
+  payers: (NamedTotal<PayerKey> & { descriptor: string })[],
+): ClientRow[] {
+  const total = month.revenue
+  if (total <= 0) return []
+
+  return payers
+    .map((p) => ({
+      key: p.key,
+      label: p.label,
+      total: month.revenueByPayer[p.key] ?? 0,
+      share: Math.round(((month.revenueByPayer[p.key] ?? 0) / total) * 100),
+      isOther: p.key === 'other',
+      note: p.key === 'other' ? p.descriptor : undefined,
+    }))
+    .filter((r) => r.total > 0)
+    .sort((a, b) => {
+      // Other last whatever its size, because it is not a client.
+      if (a.isOther !== b.isOther) return a.isOther ? 1 : -1
+      return b.total - a.total
+    })
+}
+
+/**
+ * How concentrated the revenue is, counted rather than asserted.
+ *
+ * The fewest named clients that between them cover REVENUE_CONCENTRATION of the
+ * month, and what they actually add to. Reported and left there: this page does
+ * not suggest finding more clients.
+ */
+const REVENUE_CONCENTRATION = 0.9
+
+function concentrationOf(rows: ClientRow[]): { clients: number; share: number } | null {
+  const clients = rows.filter((r) => !r.isOther)
+  if (clients.length === 0) return null
+
+  const total = rows.reduce((s, r) => s + r.total, 0)
+  if (total <= 0) return null
+
+  let taken = 0
+  let n = 0
+  for (const c of clients) {
+    taken += c.total
+    n += 1
+    if (taken / total >= REVENUE_CONCENTRATION) break
+  }
+  return { clients: n, share: Math.round((taken / total) * 100) }
+}
+
+interface OutRow {
+  key: string
+  label: string
+  note?: string
+  total: number
+}
+
+const sumRows = (rows: OutRow[]) => rows.reduce((s, r) => s + r.total, 0)
+
+/**
+ * Every dollar that left the business this month, largest first.
+ *
+ * The draw is a line here rather than a section of its own. It is money leaving
+ * the business exactly as labour and insurance are, and separating it invited
+ * the reading that the business's costs are what the business spends and the
+ * draw is something else.
+ *
+ * Sorted by size, which COST_ORDER deliberately is not. That order exists so a
+ * category keeps its colour as the ranking moves; nothing in this table is
+ * coloured, and a list answering "where does it go" that is not in order of
+ * size answers a different question.
+ *
+ * Internal transfers are absent on purpose: the business paying its own card is
+ * not a cost, and the purchases it settles are already counted as one. Money
+ * sent to an account this app does not track IS listed, because it genuinely
+ * left.
+ */
+function whereItGoes(month: MonthBucket, categories: NamedTotal<CostCategory>[]): OutRow[] {
+  const rows: OutRow[] = categories
+    .map((c) => ({
+      key: c.key as string,
+      label: c.label,
+      total: month.costsByCategory[c.key] ?? 0,
+    }))
+    .filter((r) => r.total > 0)
+
+  if (month.draw > 0) {
+    rows.push({ key: 'draw', label: 'The draw', note: 'to household', total: month.draw })
+  }
+  if (month.toOutside > 0) {
+    rows.push({
+      key: 'outside',
+      label: 'An account not tracked here',
+      note: 'not a draw',
+      total: month.toOutside,
+    })
+  }
+
+  return rows.sort((a, b) => b.total - a.total)
+}
+
+// ---------------------------------------------------------------------------
+// Balance readings
+// ---------------------------------------------------------------------------
 
 /**
  * The balance history, said honestly.
@@ -683,7 +806,7 @@ function BalanceReadings({ readings }: { readings: { as_of: string; balance: num
     parseDateOnly(iso).toLocaleDateString('en-US', { day: 'numeric', month: 'short' })
 
   const note = (
-    <div className="tiny muted" style={{ marginBottom: 8 }}>
+    <div className="rule">
       <span className="tnum">{readings.length}</span>{' '}
       {readings.length === 1 ? 'reading' : 'readings'} since {fmtDay(readings[0].as_of)}
       {spanDays > 0 && (
@@ -700,25 +823,24 @@ function BalanceReadings({ readings }: { readings: { as_of: string; balance: num
   // Too short a span to be a trend. Show the readings themselves.
   if (spanDays < 14 || readings.length < 8) {
     return (
-      <div>
+      <div style={{ maxWidth: 460 }}>
+        <table className="tbl">
+          <tbody>
+            {readings.map((r) => (
+              <tr key={r.as_of}>
+                <td className="tnum muted">{fmtDay(r.as_of)}</td>
+                <td className="num">{moneyCents(r.balance)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
         {note}
-        {readings.map((r) => (
-          <div
-            key={r.as_of}
-            className="row sm"
-            style={{ justifyContent: 'space-between', padding: '8px 0' }}
-          >
-            <span className="tnum muted">{fmtDay(r.as_of)}</span>
-            <span className="tnum">{moneyCents(r.balance)}</span>
-          </div>
-        ))}
       </div>
     )
   }
 
   return (
     <div>
-      {note}
       <TrendChart
         points={readings.map((r) => ({ date: r.as_of, value: r.balance }))}
         color="var(--steel)"
@@ -726,6 +848,7 @@ function BalanceReadings({ readings }: { readings: { as_of: string; balance: num
         label="Business cash balance"
         baseline="zero"
       />
+      {note}
     </div>
   )
 }

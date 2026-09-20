@@ -42,6 +42,19 @@ export interface SimResult {
    * cent on one chart.
    */
   balances: number[]
+  /**
+   * Interest accrued from the start of the run through month n, index-aligned
+   * with `balances` — so cumulativeInterest[0] is 0 and the last element equals
+   * `totalInterest`.
+   *
+   * The running figure, not just the final one, because a frozen projection
+   * stores a row per month and "what had this cost by month 9" is the question
+   * the Progress hero answers. Derived inside the loop rather than
+   * reconstructed afterwards: re-deriving it would have to re-run the same
+   * rounding, and any drift between the two would put the stored interest and
+   * the stored balance on different arithmetic.
+   */
+  cumulativeInterest: number[]
 }
 
 /** Total still owed across a working set. */
@@ -92,11 +105,19 @@ export function simulate(debts: SimDebt[], attackFund: number): SimResult {
     .map((d) => ({ ...d }))
 
   if (open.length === 0) {
-    return { months: 0, totalInterest: 0, events: [], stalled: false, balances: [0] }
+    return {
+      months: 0,
+      totalInterest: 0,
+      events: [],
+      stalled: false,
+      balances: [0],
+      cumulativeInterest: [0],
+    }
   }
 
   const events: PayoffEvent[] = []
   const balances: number[] = [totalOwed(open)]
+  const cumulativeInterest: number[] = [0]
   let totalInterest = 0
   let month = 0
 
@@ -135,6 +156,7 @@ export function simulate(debts: SimDebt[], attackFund: number): SimResult {
     open = open.filter((d) => d.balance > 0)
 
     balances.push(totalOwed(open))
+    cumulativeInterest.push(totalInterest)
   }
 
   return {
@@ -143,6 +165,7 @@ export function simulate(debts: SimDebt[], attackFund: number): SimResult {
     events,
     stalled: open.length > 0,
     balances,
+    cumulativeInterest,
   }
 }
 
@@ -171,11 +194,19 @@ export function simulateMinimumsOnly(debts: SimDebt[]): SimResult {
     .map((d) => ({ ...d }))
 
   if (open.length === 0) {
-    return { months: 0, totalInterest: 0, events: [], stalled: false, balances: [0] }
+    return {
+      months: 0,
+      totalInterest: 0,
+      events: [],
+      stalled: false,
+      balances: [0],
+      cumulativeInterest: [0],
+    }
   }
 
   const events: PayoffEvent[] = []
   const balances: number[] = [totalOwed(open)]
+  const cumulativeInterest: number[] = [0]
   let totalInterest = 0
   let month = 0
 
@@ -199,6 +230,7 @@ export function simulateMinimumsOnly(debts: SimDebt[]): SimResult {
     open = open.filter((d) => d.balance > 0)
 
     balances.push(totalOwed(open))
+    cumulativeInterest.push(totalInterest)
   }
 
   return {
@@ -207,6 +239,7 @@ export function simulateMinimumsOnly(debts: SimDebt[]): SimResult {
     events,
     stalled: open.length > 0,
     balances,
+    cumulativeInterest,
   }
 }
 

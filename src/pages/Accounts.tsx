@@ -1,19 +1,36 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useData, type Account } from '../lib/data'
-import AssetsTable from '../components/AssetsTable'
+import { isCleared, useData, useNetWorth, usePayoffPlan, type Account, type Asset } from '../lib/data'
+import AccountsAssets from '../components/AccountsAssets'
 import { useAuth } from '../lib/auth'
 import { supabase } from '../lib/supabase'
-import { isoDate, money, moneyCents, minimum, accountLabel, relativeTime, rateLabel, dueLabel, ownerLabel } from '../lib/format'
+import type { AssetRow } from '../lib/database.types'
+import {
+  isoDate,
+  money,
+  moneyCents,
+  minimum,
+  accountLabel,
+  relativeTime,
+  rateLabel,
+  dueLabel,
+  ownerLabel,
+  parseDateOnly,
+  signedAmount,
+} from '../lib/format'
 
 /**
- * /accounts — BUILD.md §7.
+ * /accounts. Grouped by what things ARE, not by whether Plaid can reach them.
  *
- * Synced accounts are read-only. Manual accounts carry an inline input and one
- * save button. Non-negotiable #5: there is no bank-linking UI here, and never
- * will be — the debts plus savings are seeded once.
+ * Debts are the payoff queue. Cash is where money sits and is spent from. Assets
+ * are what is owned. A synced balance shows what moved, and when, since the
+ * previous reading; a
+ * typed-in one carries an inline input, and every inline edit on the page,
+ * balances and valuations alike, is written by the single Save changes button.
  *
- * Rates, minimums and payoff order are fixed in the seed. Only balances move.
+ * Rates, minimums and payoff order are seeded; only balances move. The one
+ * exception is EditTerms, which exists because a rate really does change and a
+ * promotional period really does end, and there was otherwise no way in.
  */
 
 const byPayoffOrder = (a: Account, b: Account) => a.payoff_order - b.payoff_order
@@ -30,6 +47,17 @@ interface SnapshotInsert {
 /** The stored balance as the input renders it, so "dirty" is a plain string compare. */
 const seedValue = (a: Account) => a.balance.toFixed(2)
 
+/**
+ * The same, for a valuation.
+ *
+ * toFixed, never a truthiness test on the number. A vehicle written down to 0.00
+ * is a real figure on record, and the old per-row editor seeded with
+ * `value ? String(value) : ''`, which opened blank on it: saving without
+ * retyping looked like a no-op while actually refusing to save, and the only way
+ * to see the stored 0 was to close the field again.
+ */
+const assetSeedValue = (a: Asset) => a.estimated_value.toFixed(2)
+
 /** Accepts "1234.56", "$1,234.56", " 1234 ". Rejects anything not a finite number >= 0. */
 function parseAmount(raw: string): number | null {
   const cleaned = raw.replace(/[$,\s]/g, '')
@@ -39,28 +67,122 @@ function parseAmount(raw: string): number | null {
   return Math.round(n * 100) / 100
 }
 
+/**
+ * The Updated column is 86px wide, so the age of a figure is said in as few
+ * characters as it can be said in: "today", "6d", "4mo".
+ *
+ * "manual" is what a balance with no recorded update says: the figure typed in
+ * when the plan was seeded and not touched since. It is not the same fact as
+ * "0 days old" and must not render as "today".
+ */
+function shortAge(iso: string | null): string {
+  if (!iso) return 'manual'
+  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000)
+  if (days <= 0) return 'today'
+  if (days < 30) return `${days}d`
+  const months = Math.floor(days / 30)
+  if (months < 12) return `${months}mo`
+  return `${Math.floor(days / 365)}y`
+}
+
+/**
+ * What moved since the previous reading of this balance.
+ *
+ * Only meaningful on a debt, and the direction decides the colour: a balance
+ * that ROSE is a deviation from the plan and is red; one that fell is progress
+ * and is green. Amber is never either of those. It belongs to the target alone.
+ *
+ * Returns null when there is only one reading on record, which is not the same
+ * as "nothing moved" and must not render as a $0 change.
+ *
+ * The movement is DATED, not described in relative words. "since yesterday"
+ * is wrong on a typed-in account, which is updated about monthly, and "since
+ * the last reading" is true but tells the reader nothing they can check. The
+ * date of the previous reading is accurate in both cases, so that is what it
+ * says. If the view has no previous date the clause is dropped rather than
+ * guessed at.
+ */
+function movement(a: Account): { short: string; words: string; tone: 'is-bad' | 'is-good' } | null {
+  if (a.previousBalance === null) return null
+  const delta = a.balance - a.previousBalance
+  if (Math.abs(delta) < 0.005) return null
+  const since = a.previousBalanceAsOf
+    ? ` since ${parseDateOnly(a.previousBalanceAsOf).toLocaleDateString('en-US', {
+        day: 'numeric',
+        month: 'short',
+      })}`
+    : ''
+  return {
+    short: signedAmount(delta, money),
+    words: `${delta > 0 ? 'rose' : 'fell'} ${money(Math.abs(delta))}${since}`,
+    tone: delta > 0 ? 'is-bad' : 'is-good',
+  }
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+
+/** The amber pill. The current target, and the only amber anywhere on this page. */
+const AMBER_PILL = { background: 'var(--amber-bg)', color: 'var(--amber-tx)' } as const
+
+/**
+ * The business pill, deliberately neutral.
+ *
+ * A business account's balance and history are tracked exactly like any other,
+ * but none of its spending reaches a budget bucket and none of its income counts
+ * as household income. An exclusion nobody can see is indistinguishable from a
+ * bug, so it is stated on the account, quietly, because it is a fact about the
+ * account and not a warning about it.
+ */
+const BUSINESS_PILL = { background: 'var(--card)', color: 'var(--steel)' } as const
+
 export default function Accounts() {
   const navigate = useNavigate()
 
-  const { loading, error, accounts, plan, memberNames, refresh } = useData()
-
-  /** Debts still showing the figure typed in at plan start rather than a live one. */
-  const unlinkedCount = accounts.filter(
-    (a) => !a.plaid_account_id && !a.is_manual && ['card', 'loan', 'tax'].includes(a.kind),
-  ).length
+  const { loading, error, accounts, assets, memberNames, lastSyncedAt, refresh } = useData()
+  const { assetsTotal, cashTotal, debtTotal, netWorth } = useNetWorth()
+  const payoff = usePayoffPlan()
   const { user } = useAuth()
+
+  /** The debt being attacked. The only row on the page that carries amber. */
+  const targetId = payoff?.target?.id ?? null
 
   const [values, setValues] = useState<Record<string, string>>({})
   const [seed, setSeed] = useState<Record<string, string>>({})
+  const [assetValues, setAssetValues] = useState<Record<string, string>>({})
+  const [assetSeed, setAssetSeed] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
+  const [showCleared, setShowCleared] = useState(false)
+  const [showAllDebts, setShowAllDebts] = useState(false)
+  const [tab, setTab] = useState<'debts' | 'cash' | 'assets'>('debts')
 
   /**
-   * Debts are the payoff queue. Bank accounts are where money sits and is spent
+   * Debts are the payoff queue. Cash accounts are where money sits and is spent
    * from — they are not owed to anybody, so mixing them into one list invites
    * reading a chequing balance as part of what the household owes.
    */
   const isDebt = (a: Account) => a.kind === 'card' || a.kind === 'loan' || a.kind === 'tax'
+
+  const allDebts = useMemo(
+    () => accounts.filter((a) => isDebt(a)).sort(byPayoffOrder),
+    [accounts],
+  )
+
+  /**
+   * Cleared debts collapse into a count rather than filling rows in the queue.
+   *
+   * Nine open debts and four zeroes read as thirteen problems. The four are kept
+   * one click away because a cleared account is still an account, and a reader
+   * checking whether something really did go to zero should not have to take the
+   * page's word for it.
+   */
+  const openDebts = useMemo(() => allDebts.filter((a) => !isCleared(a)), [allDebts])
+  const clearedDebts = useMemo(() => allDebts.filter((a) => isCleared(a)), [allDebts])
+
+  const cash = useMemo(
+    () => accounts.filter((a) => !isDebt(a)).sort(byPayoffOrder),
+    [accounts],
+  )
 
   /**
    * "Connected" means a bank is actually attached — not merely that the account
@@ -69,31 +191,18 @@ export default function Accounts() {
    * the intent was, and calling it synced implies a live balance that does not
    * exist.
    */
-  /**
-   * Every debt in payoff order, synced and typed-in together.
-   *
-   * These were two separate tables — CONNECTED above, TYPED IN below — which
-   * split the payoff queue in half by an implementation detail: whether a bank
-   * feed happens to reach the account. The queue is ordered by rate, and reading
-   * it in that order meant reading down two tables and merging them by eye. One
-   * table, ordered the way the plan is ordered; each row says for itself whether
-   * its figure is synced or typed, and only a typed one carries an input.
-   */
-  const debts = useMemo(
-    () => accounts.filter((a) => isDebt(a)).sort(byPayoffOrder),
-    [accounts],
-  )
-
-  const banks = useMemo(
-    () => accounts.filter((a) => !isDebt(a)).sort(byPayoffOrder),
-    [accounts],
-  )
+  const isTyped = (a: Account) => !a.plaid_account_id
 
   /** Every account whose balance is typed in, whatever kind it is. */
   const manual = useMemo(
-    () => accounts.filter((a) => !a.plaid_account_id).sort(byPayoffOrder),
+    () => accounts.filter(isTyped).sort(byPayoffOrder),
     [accounts],
   )
+
+  /** Debts still showing the figure typed in at plan start rather than a live one. */
+  const unlinkedCount = accounts.filter(
+    (a) => !a.plaid_account_id && !a.is_manual && ['card', 'loan', 'tax'].includes(a.kind),
+  ).length
 
   /**
    * Re-seed on the VALUES, not the array identity.
@@ -124,8 +233,31 @@ export default function Accounts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedSig])
 
+  /** Assets seed the same way and for the same reason: a refresh must not eat a half-typed valuation. */
+  const assetSig = useMemo(
+    () => assets.map((a) => `${a.id}:${assetSeedValue(a)}`).join('|'),
+    [assets],
+  )
+
+  useEffect(() => {
+    const next: Record<string, string> = {}
+    for (const a of assets) next[a.id] = assetSeedValue(a)
+    setAssetSeed(next)
+    setAssetValues((prev) => {
+      const merged = { ...next }
+      for (const a of assets) {
+        const was = prev[a.id]
+        if (was !== undefined && was !== assetSeed[a.id]) merged[a.id] = was
+      }
+      return merged
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assetSig])
+
   const changed = manual.filter((a) => (values[a.id] ?? '') !== (seed[a.id] ?? ''))
-  const canSave = changed.length > 0 && !saving && Boolean(user)
+  const changedAssets = assets.filter((a) => (assetValues[a.id] ?? '') !== (assetSeed[a.id] ?? ''))
+  const dirty = changed.length + changedAssets.length
+  const canSave = dirty > 0 && !saving && Boolean(user)
 
   /**
    * The most recent typed-in balance. Scoped to manual accounts: the seed writes
@@ -143,10 +275,34 @@ export default function Accounts() {
     setValues((prev) => ({ ...prev, [id]: v }))
   }
 
-  async function save() {
-    if (!user || changed.length === 0) return
+  function setAssetValue(id: string, v: string) {
+    setProblem(null)
+    setAssetValues((prev) => ({ ...prev, [id]: v }))
+  }
 
-    const invalid = changed.filter((a) => parseAmount(values[a.id] ?? '') === null)
+  /**
+   * One button, two kinds of write, and they are genuinely different writes.
+   *
+   * A typed-in ACCOUNT balance becomes a row in balance_snapshots, because the
+   * history of a balance is the whole basis of "what moved" and of every chart.
+   * An ASSET has no snapshot table: its valuation is a column on the row, and the
+   * figure and the date it was valued on are written together, never separately.
+   * A number somebody refreshed today wearing a valuation date from March is
+   * worse than a stale number honestly dated, because that date is the only thing
+   * telling a reader how much to trust the figure beside it.
+   *
+   * They used to be two controls, Save balances here and a per-row disclosure
+   * on each vehicle, which meant an edited valuation sat in a field under a button
+   * that could never save it. One button now collects both; the two write paths
+   * below are unchanged.
+   */
+  async function save() {
+    if (!user || dirty === 0) return
+
+    const invalid = [
+      ...changed.filter((a) => parseAmount(values[a.id] ?? '') === null),
+      ...changedAssets.filter((a) => parseAmount(assetValues[a.id] ?? '') === null),
+    ]
     if (invalid.length > 0) {
       const names = invalid.map((a) => a.name).join(', ')
       setProblem(
@@ -161,155 +317,84 @@ export default function Accounts() {
     setSaving(true)
 
     const asOf = isoDate(new Date())
-    const rows: SnapshotInsert[] = changed.map((a) => ({
-      account_id: a.id,
-      balance: parseAmount(values[a.id] ?? '') as number,
-      as_of: asOf,
-      source: 'manual' as const,
-      entered_by: user.id,
-    }))
 
-    // Saving twice in one day updates the day's snapshot rather than colliding
-    // with the (account_id, as_of, source) unique constraint.
-    // The cast is only to satisfy the generated schema's insert generic, which
-    // resolves to never for every table under the current supabase-js typings.
-    // SnapshotInsert above is the real, checked shape of what goes over the wire.
-    const { error: saveError } = await supabase
-      .from('balance_snapshots')
-      .upsert(rows as unknown as never[], { onConflict: 'account_id,as_of,source' })
+    if (changed.length > 0) {
+      const rows: SnapshotInsert[] = changed.map((a) => ({
+        account_id: a.id,
+        balance: parseAmount(values[a.id] ?? '') as number,
+        as_of: asOf,
+        source: 'manual' as const,
+        entered_by: user.id,
+      }))
 
-    if (saveError) {
-      setProblem(saveError.message)
-      setSaving(false)
-      return
+      // Saving twice in one day updates the day's snapshot rather than colliding
+      // with the (account_id, as_of, source) unique constraint.
+      // The cast is only to satisfy the generated schema's insert generic, which
+      // resolves to never for every table under the current supabase-js typings.
+      // SnapshotInsert above is the real, checked shape of what goes over the wire.
+      const { error: saveError } = await supabase
+        .from('balance_snapshots')
+        .upsert(rows as unknown as never[], { onConflict: 'account_id,as_of,source' })
+
+      if (saveError) {
+        setProblem(saveError.message)
+        setSaving(false)
+        return
+      }
+    }
+
+    for (const a of changedAssets) {
+      // Both columns in ONE update. Two writes could leave the figure changed and
+      // the date not, which is the exact state the date column exists to prevent.
+      // A plain update with a partial row needs no cast — only insert and upsert
+      // resolve to `never` under the current supabase-js typings.
+      const patch: Partial<AssetRow> = {
+        estimated_value: parseAmount(assetValues[a.id] ?? '') as number,
+        valued_on: asOf,
+      }
+      const { error: assetError } = await supabase.from('assets').update(patch).eq('id', a.id)
+      if (assetError) {
+        setProblem(assetError.message)
+        setSaving(false)
+        return
+      }
     }
 
     await refresh()
     setSaving(false)
   }
 
-  /** "Northbank \u20228802" — the issuer, plus the digits printed on the card. */
-  const instMask = (a: Account) =>
-    [a.institution, a.mask ? `\u2022\u2022${a.mask}` : ''].filter(Boolean).join(' ') || null
-
   /**
-   * Says so when an account's money is the business's.
+   * What the bank calls this account, where the household's nickname is not
+   * enough to find it.
    *
-   * The balance and history are tracked exactly like any other account, but none
-   * of its spending reaches a budget bucket and none of its income counts as
-   * household income. An exclusion nobody can see is indistinguishable from a
-   * bug, so it is stated on the account itself rather than left to be inferred.
+   * Two cards here carry the SAME nickname, so a row identified by name alone is
+   * not identified at all. The issuer is dropped when the name already carries
+   * it, which is why this is not simply institution plus mask: "Chase Amazon"
+   * must not read "Chase Amazon Chase ••0000". The mask is the part always worth
+   * keeping, because it is the only piece guaranteed unique and it is what the
+   * bank prints. Returns null when there is nothing to add.
    */
-  const businessNote = (a: Account) => (a.is_business ? 'business \u2014 outside the budget' : null)
+  const bankTail = (a: Account) => {
+    const inst = (a.institution ?? '').trim()
+    const wantInst = inst.length > 0 && !a.name.toLowerCase().includes(inst.toLowerCase())
+    return [wantInst ? inst : '', a.mask ? `••${a.mask}` : ''].filter(Boolean).join(' ') || null
+  }
 
-  /** "12.34% · min $100 · owner" — "payment plan" stands in where there is no rate. */
   /**
-   * The owner now leads the account name, so it is not repeated here. The type
-   * label leads instead: "Auto loan" answers the first question a reader has when
-   * scanning a list of a dozen debts, which the rate alone does not. The issuing bank
-   * follows it, because two "Credit card" rows are only tellable apart by who
-   * issued them — and where even that is not enough (this household holds two
-   * cards from one issuer sharing a nickname), the bank's own last four is.
+   * The phone's sub-line. On desktop the rate, the owner and the minimum each
+   * have a column; on a 376px row they do not, so they stack under the name:
+   * the same facts, said in one line instead of five cells.
    */
-  function syncedSub(a: Account) {
-    const parts = [a.type_label, instMask(a), businessNote(a)]
-    if (a.kind === 'card' || a.kind === 'loan' || a.kind === 'tax') {
-      parts.push(rateLabel(a), `min ${minimum(a.minimum_payment)}`, dueLabel(a.next_due_on) ?? '')
+  function mobileSub(a: Account) {
+    const parts: (string | null)[] = []
+    if (isDebt(a)) {
+      parts.push(rateLabel(a), `min ${minimum(a.minimum_payment)}`, bankTail(a))
+    } else {
+      parts.push(a.type_label, bankTail(a))
     }
+    parts.push(isTyped(a) ? 'typed in' : ownerLabel(a.owner))
     return parts.filter(Boolean).join(' · ')
-  }
-
-  /** "12.34% · updated 3 days ago" — savings shows its deposit target instead of a rate. */
-  function manualSub(a: Account) {
-    const parts: (string | null)[] = [a.type_label, instMask(a), businessNote(a)]
-    if (a.kind === 'savings') {
-      if (plan) parts.push(`target ${money(plan.deposit_target)}`)
-    } else if (a.kind !== 'checking') {
-      parts.push(rateLabel(a), `min ${minimum(a.minimum_payment)}`, dueLabel(a.next_due_on) ?? '')
-    }
-    parts.push(a.balanceUpdatedAt ? `updated ${relativeTime(a.balanceUpdatedAt)}` : 'no update yet')
-    return parts.filter(Boolean).join(' · ')
-  }
-
-  /**
-   * The sub-line for the wide table, where the rate, the minimum and the next
-   * due date each have a column of their own and repeating them under the name
-   * would print every one of them twice.
-   *
-   * What it keeps is the one thing the three section headings used to say and
-   * the columns cannot: whether this balance came from a bank or from somebody
-   * typing it in. Two accounts now sit in one list with very different claims
-   * behind their figures, and an unqualified number implies the stronger one.
-   */
-  function wideSub(a: Account) {
-    const parts: (string | null)[] = [a.type_label, instMask(a), businessNote(a)]
-    if (a.kind === 'savings' && plan) parts.push(`target ${money(plan.deposit_target)}`)
-    parts.push(
-      a.plaid_account_id
-        ? 'synced'
-        : a.balanceUpdatedAt
-          ? `typed in, updated ${relativeTime(a.balanceUpdatedAt)}`
-          : 'typed in, no update yet',
-    )
-    return parts.filter(Boolean).join(' · ')
-  }
-
-  /**
-   * One row of the single accounts table.
-   *
-   * The rate, minimum and due-date cells are dropped below 1024px rather than
-   * squeezed: on a phone the sub-line above carries exactly the same facts, and
-   * five columns across 376px would truncate the account name, which is the one
-   * thing the row cannot do without.
-   */
-  function accountRow(a: Account) {
-    const debt = isDebt(a)
-    const synced = Boolean(a.plaid_account_id)
-    const isClear = debt && (a.balance <= 0 || Boolean(a.cleared_at))
-
-    return (
-      <tr key={a.id}>
-        <td>
-          <div className="sm" style={{ fontWeight: 600 }}>
-            {accountLabel(a)}
-          </div>
-          <div className="tiny muted tnum acct-sub-mobile">
-            {synced ? syncedSub(a) : manualSub(a)}
-          </div>
-          <div className="tiny muted tnum acct-sub-wide">{wideSub(a)}</div>
-          {debt && <EditTerms account={a} onSaved={refresh} />}
-        </td>
-
-        <td className="acct-col tnum tiny muted" style={{ textAlign: 'right' }}>
-          {debt ? rateLabel(a) : ''}
-        </td>
-
-        <td className="acct-col tnum tiny muted" style={{ textAlign: 'right' }}>
-          {debt ? minimum(a.minimum_payment) : ''}
-        </td>
-
-        <td style={{ textAlign: 'right' }}>
-          {synced ? (
-            <span className="tnum sm" style={isClear ? { color: 'var(--green)' } : undefined}>
-              {isClear ? 'cleared' : moneyCents(a.balance)}
-            </span>
-          ) : (
-            <input
-              className="tnum"
-              style={{ width: 104, padding: '7px 9px', fontSize: 13, textAlign: 'right' }}
-              inputMode="decimal"
-              aria-label={`${accountLabel(a)} balance`}
-              value={values[a.id] ?? ''}
-              onChange={(e) => setValue(a.id, e.target.value)}
-            />
-          )}
-        </td>
-
-        <td className="acct-col tnum tiny muted" style={{ textAlign: 'right' }}>
-          {debt ? (dueLabel(a.next_due_on) ?? '') : ''}
-        </td>
-      </tr>
-    )
   }
 
   const lastSavedBy = lastManual?.enteredBy ? memberNames[lastManual.enteredBy] : undefined
@@ -319,63 +404,286 @@ export default function Accounts() {
   // placeholders there would read as a fault rather than a save.
   const showSkeleton = loading && accounts.length === 0
 
+  /** Whether anything on the page belongs to the business. is_business, never owner. */
+  const hasBusiness = accounts.some((a) => a.is_business)
+
   /** Read off the data, so the owner CHECK constraint is never guessed at. */
   const owners = useMemo(
     () => Array.from(new Set(accounts.map((a) => a.owner))).sort(),
     [accounts],
   )
 
-  return (
-    <div className="page">
-      <div style={{ fontWeight: 700, fontSize: 20, marginBottom: 4 }}>Accounts</div>
-      <div className="tiny muted" style={{ marginBottom: 16 }}>
-        Rates and minimums are fixed. Only balances move.
-      </div>
+  /** The inline balance field, identical wherever a typed-in figure is edited. */
+  function balanceInput(a: Account, width: number) {
+    return (
+      <input
+        className="b tnum"
+        style={{ width }}
+        inputMode="decimal"
+        aria-label={`${accountLabel(a)} balance`}
+        value={values[a.id] ?? ''}
+        onChange={(e) => setValue(a.id, e.target.value)}
+      />
+    )
+  }
 
-      {/*
-        ALWAYS the first action on the page.
-        This panel used to appear only while a seeded debt was still waiting to be
-        connected. Once each was either linked or marked typed-in it disappeared,
-        and the only remaining route to /link was a ghost button below three
-        tables and the save control — present in the build, invisible in practice,
-        which is indistinguishable from missing to anyone trying to add an
-        account. There is no nav entry for /link, so this IS the entry point.
-      */}
-      {/* Capped at desktop: a form is not more usable at 1036px, it is just a
-          longer distance between a label and the field it belongs to. */}
-      <div className="card-panel dk-panel-cap" style={{ marginBottom: 20 }}>
-        <div className="sm" style={{ fontWeight: 700, marginBottom: 3 }}>
-          Add an account
-        </div>
-        <div className="tiny muted" style={{ marginBottom: 11, lineHeight: 1.55 }}>
-          {unlinkedCount > 0 ? (
-            <>
-              <span className="tnum">{unlinkedCount}</span>{' '}
-              {unlinkedCount === 1 ? 'account is' : 'accounts are'} showing a figure
-              entered by hand rather than a live one.
-            </>
+  /** One row of the desktop Debts table. */
+  function debtRow(a: Account) {
+    const isTarget = a.id === targetId
+    const cleared = isCleared(a)
+    const moved = movement(a)
+
+    return (
+      <tr key={a.id}>
+        <td>
+          <span style={{ fontWeight: isTarget ? 700 : 500 }}>{a.name}</span>{' '}
+          {isTarget && (
+            <span className="pill" style={AMBER_PILL}>
+              target
+            </span>
+          )}
+          {a.is_business && (
+            <span className="pill" style={BUSINESS_PILL}>
+              business
+            </span>
+          )}
+          {/* The bank's own name for it, where the nickname alone does not
+              identify the row. Quiet, because it is only ever read when two
+              names collide. */}
+          {bankTail(a) && <span className="tiny muted tnum"> {bankTail(a)}</span>}
+          <div>
+            <EditTerms account={a} onSaved={refresh} />
+          </div>
+        </td>
+        <td className="muted">{ownerLabel(a.owner)}</td>
+        <td className="tnum">{rateLabel(a)}</td>
+        <td className="num">{minimum(a.minimum_payment)}</td>
+        <td className="num">
+          {cleared ? (
+            <span className="is-good">cleared</span>
+          ) : isTyped(a) ? (
+            balanceInput(a, 104)
           ) : (
-            'Two ways in, depending on whether a bank connection can reach it.'
+            <span style={{ fontWeight: isTarget ? 700 : 400 }}>{moneyCents(a.balance)}</span>
+          )}
+        </td>
+        <td className={`num tiny ${moved ? moved.tone : 'muted'}`}>
+          {moved ? moved.short : shortAge(a.balanceUpdatedAt)}
+        </td>
+      </tr>
+    )
+  }
+
+  /** One row of the desktop Cash table. Cash has no queue position and no rate. */
+  function cashRow(a: Account) {
+    return (
+      <tr key={a.id}>
+        <td>
+          {a.name}{' '}
+          {/* "Chase ••0000". Two chequing accounts at one bank are told apart by
+              the last four and by nothing else. */}
+          {bankTail(a) && <span className="tiny muted tnum">{bankTail(a)} </span>}
+          <span className="tiny muted">{ownerLabel(a.owner)}</span>{' '}
+          {a.kind === 'savings' && (
+            <span
+              className="pill"
+              style={{ background: 'var(--green-bg)', color: 'var(--green-tx)' }}
+            >
+              house fund
+            </span>
+          )}
+          {a.is_business && (
+            <span className="pill" style={BUSINESS_PILL}>
+              business
+            </span>
+          )}
+        </td>
+        <td className="num">
+          {isTyped(a) ? balanceInput(a, 104) : moneyCents(a.balance)}
+        </td>
+      </tr>
+    )
+  }
+
+  /** One phone row: name and facts on the left, the figure or its field flush right. */
+  function mobileRow(a: Account) {
+    const isTarget = a.id === targetId
+    const cleared = isDebt(a) && isCleared(a)
+    const moved = isDebt(a) ? movement(a) : null
+
+    return (
+      <div className="row" key={a.id}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div className="sm" style={{ fontWeight: isTarget ? 700 : 600 }}>
+            {a.name}{' '}
+            {isTarget && (
+              <span className="pill" style={AMBER_PILL}>
+                target
+              </span>
+            )}
+            {a.kind === 'savings' && (
+              <span
+                className="pill"
+                style={{ background: 'var(--green-bg)', color: 'var(--green-tx)' }}
+              >
+                house fund
+              </span>
+            )}
+          </div>
+          <div className="tiny muted tnum">{mobileSub(a)}</div>
+          {moved && <div className={`tiny tnum ${moved.tone}`}>{moved.words}</div>}
+          {/* Muted, not amber: amber is the target and nothing else, and this is
+              a fact about where the money belongs rather than a target. */}
+          {a.is_business && (
+            <div className="tiny muted">{'business — outside the budget'}</div>
+          )}
+          {isDebt(a) && <EditTerms account={a} onSaved={refresh} />}
+        </div>
+        {cleared ? (
+          <div className="tnum sm is-good">cleared</div>
+        ) : isTyped(a) ? (
+          balanceInput(a, 96)
+        ) : (
+          <div className="tnum sm" style={{ fontWeight: isTarget ? 700 : 500 }}>
+            {money(a.balance)}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  /**
+   * The save control, rendered once per layout.
+   *
+   * Desktop puts the button and the last-saved line on one row; the phone gives
+   * the button the full width. Both drive the same handler and the same dirty
+   * state, so there is never a question of which one saved.
+   */
+  function saveBlock(wide: boolean) {
+    if (manual.length === 0 && assets.length === 0) return null
+    return (
+      <>
+        <div
+          style={{
+            display: 'flex',
+            gap: 9,
+            marginTop: 14,
+            alignItems: 'center',
+            flexWrap: 'wrap',
+          }}
+        >
+          <button
+            className="btn"
+            style={wide ? { width: 'auto' } : undefined}
+            disabled={!canSave}
+            onClick={() => void save()}
+          >
+            {saving ? 'Saving…' : 'Save changes'}
+          </button>
+          {lastManual?.balanceUpdatedAt && (
+            <span className="tiny muted tnum">
+              Last saved {relativeTime(lastManual.balanceUpdatedAt)}
+              {lastSavedBy ? ` by ${lastSavedBy}` : ''}
+            </span>
           )}
         </div>
+        {problem && (
+          <div className="tiny is-bad" style={{ marginTop: 9 }}>
+            {problem}
+          </div>
+        )}
+      </>
+    )
+  }
 
-        {/*
-          Two DISTINCT routes, each labelled with the case it is for.
-          A prominent "Connect a bank" above a faint "add by hand" read as one
-          real action and one afterthought, so the second was reported missing
-          even while it was on screen. Store cards are the whole reason the second
-          route exists — no aggregator reaches them — so it says so.
-        */}
-        <button className="btn" onClick={() => navigate('/link')}>
-          Connect a bank
-        </button>
-        <div className="tiny muted" style={{ margin: '5px 0 13px', lineHeight: 1.5 }}>
-          For a bank or card that can be signed into. Balances then update on
-          their own.
+  /** The phone's debt list is capped; the rest is one line saying how much it hides. */
+  const MOBILE_CAP = 7
+  const mobileDebts = showAllDebts ? openDebts : openDebts.slice(0, MOBILE_CAP)
+  const mobileHidden = openDebts.slice(mobileDebts.length)
+  const hiddenTotal = mobileHidden.reduce((s, a) => s + a.balance, 0)
+
+  return (
+    <div className="page">
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'baseline',
+          gap: 12,
+          marginBottom: 13,
+        }}
+      >
+        <div>
+          <h1 className="ph">Accounts</h1>
+          <div className="sm muted tnum">
+            {[plural(allDebts.length, 'debt'), `${cash.length} cash`, plural(assets.length, 'asset')].join(
+              ' · ',
+            )}
+          </div>
         </div>
-
-        <AddDebt owners={owners} onAdded={() => void refresh()} />
+        <div className="tiny muted" style={{ whiteSpace: 'nowrap' }}>
+          {lastSyncedAt ? `synced ${relativeTime(lastSyncedAt)}` : 'not synced yet'}
+        </div>
       </div>
+
+      {/* OWED, OWNED, NET. Plain ink on all three: red is a deviation from plan,
+          and a household that set out owing more than it owns is not deviating
+          from anything by reporting so.
+
+          The phone drops OWNED and keeps the two figures it cannot derive from
+          the rows below. Three stacked cards would push the first debt off the
+          screen, and what is owned is the sum of the Cash and Assets filters. */}
+      <div className="acct-sub-wide">
+        <div className="g3" style={{ marginBottom: 15 }}>
+          <Stat label="OWED" figure={money(debtTotal)} />
+          <Stat label="OWNED" figure={money(assetsTotal + cashTotal)} />
+          <Stat label="NET" figure={signedAmount(netWorth, money)} />
+        </div>
+      </div>
+      {/* The inner div carries the flex, never .acct-sub-mobile itself: an inline
+          display would outrank the media query that hides it on a desktop. */}
+      <div className="acct-sub-mobile">
+        <div style={{ display: 'flex', gap: 9, marginBottom: 12 }}>
+          <Stat label="OWED" figure={money(debtTotal)} grow />
+          <Stat label="NET" figure={signedAmount(netWorth, money)} grow />
+        </div>
+      </div>
+
+      {/* A quiet rule, not a grey block, and only where there IS a business
+          account to qualify.
+
+          These figures come from useNetWorth(), which counts the business on
+          BOTH sides: its cash is in what is owned and its card is in what is
+          owed. That is deliberate — counting the card but not the cash would
+          overstate what the household owes — but it is invisible in three
+          totals, and an inclusion nobody can see reads as a bug the first time
+          somebody adds the two tables up by hand. The net worth panel states
+          the same fact for the same reason.
+
+          Note this says nothing about budget buckets. Business spending never
+          reaches one, and nothing on this page computes a bucket. */}
+      {hasBusiness && (
+        <div className="rule" style={{ marginTop: 0, marginBottom: 15 }}>
+          These figures count the business on both sides: its cash is in what is
+          owned, its card in what is owed. Its spending stays out of the budget.
+        </div>
+      )}
+
+      {/*
+        ALWAYS above the tables.
+        This used to appear only while a seeded debt was still waiting to be
+        connected. Once each was either linked or marked typed-in it disappeared,
+        and the only remaining route to /link was a ghost button below the tables
+        and the save control — present in the build, invisible in practice, which
+        is indistinguishable from missing to anyone trying to add an account.
+        There is no nav entry for /link, so this IS the entry point.
+      */}
+      <AddAccount
+        owners={owners}
+        unlinkedCount={unlinkedCount}
+        onLink={() => navigate('/link')}
+        onAdded={() => void refresh()}
+      />
 
       {error && (
         <div className="banner banner--red tiny" style={{ marginBottom: 16 }}>
@@ -385,115 +693,193 @@ export default function Accounts() {
 
       {showSkeleton ? (
         <>
-          {/* The same shape the loaded table has: a debts group, a bank accounts
-              group, the save button, then vehicles. */}
           <div className="skeleton" style={{ width: 96, height: 10, marginBottom: 10 }} />
           <SkeletonRows count={8} />
           <div className="skeleton" style={{ width: 96, height: 10, margin: '20px 0 10px' }} />
-          <SkeletonRows count={3} />
-          <div className="skeleton" style={{ height: 46, marginTop: 16 }} />
-          {/* Vehicles, which land below the save button. Without these the page
-              grew by a whole section the moment the rows arrived. */}
-          <div className="skeleton" style={{ width: 96, height: 10, margin: '20px 0 10px' }} />
           <SkeletonRows count={4} />
+          <div className="skeleton" style={{ height: 46, marginTop: 16 }} />
         </>
       ) : (
         <>
           {/*
-            ONE table, five columns. The two groups keep their own heading rows
-            because the distinction they draw is real and load-bearing — a bank
-            account is not owed to anybody and is not in the payoff queue — but
-            they are rows inside this table now, not three tables in a stack with
-            three sets of column widths that never line up.
+            The two layouts, switched in CSS rather than in JavaScript.
+
+            .acct-sub-wide and .acct-sub-mobile are index.css's existing pair for
+            exactly this page: the first appears only at >=1024px, the second only
+            below it. A matchMedia hook would decide the same thing in JS and
+            flicker through the wrong layout on first paint. Both trees are bound
+            to the same values/assetValues state, so whichever one is on screen is
+            editing the same figures.
           */}
-          <table>
-            <thead className="acct-head">
-              <tr className="caps">
-                <th>Account</th>
-                <th className="r">Rate</th>
-                <th className="r">Minimum</th>
-                <th className="r">Balance</th>
-                <th className="r">Next due</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr className="acct-group">
-                <td colSpan={5} className="caps" style={{ paddingTop: 10 }}>
-                  DEBTS
-                </td>
-              </tr>
-              {debts.length === 0 ? (
+          <div className="acct-sub-wide">
+            <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>Debts</div>
+            <table className="tbl">
+              <thead>
                 <tr>
-                  <td colSpan={5} className="tiny muted">
-                    No debts on record.
-                  </td>
+                  <th>Account</th>
+                  <th style={{ width: 74 }}>Owner</th>
+                  <th style={{ width: 70 }}>Rate</th>
+                  <th className="num" style={{ width: 78 }}>
+                    Minimum
+                  </th>
+                  <th className="num" style={{ width: 118 }}>
+                    Balance
+                  </th>
+                  <th className="num" style={{ width: 82 }}>
+                    Updated
+                  </th>
                 </tr>
-              ) : (
-                debts.map(accountRow)
-              )}
+              </thead>
+              <tbody>
+                {openDebts.length === 0 && clearedDebts.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="tiny muted">
+                      No debts on record.
+                    </td>
+                  </tr>
+                ) : (
+                  <>
+                    {openDebts.map(debtRow)}
+                    {showCleared && clearedDebts.map(debtRow)}
+                  </>
+                )}
+              </tbody>
+            </table>
 
-              <tr className="acct-group">
-                <td colSpan={5}>
-                  <div className="caps">BANK ACCOUNTS</div>
-                  <div className="tiny muted" style={{ lineHeight: 1.5 }}>
-                    Where money sits and is spent from. Not part of the payoff queue.
-                  </div>
-                </td>
-              </tr>
-              {banks.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="tiny muted">
-                    No bank accounts connected.
-                  </td>
-                </tr>
-              ) : (
-                banks.map(accountRow)
-              )}
-            </tbody>
-          </table>
-
-          {manual.length > 0 && (
-            <>
+            {clearedDebts.length > 0 && (
               <button
-                className="btn"
-                style={{ marginTop: 16 }}
-                disabled={!canSave}
-                onClick={() => void save()}
+                type="button"
+                className="tiny muted tnum"
+                onClick={() => setShowCleared((v) => !v)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  padding: '6px 0 0',
+                  font: 'inherit',
+                  cursor: 'pointer',
+                }}
               >
-                {saving ? 'Saving…' : 'Save balances'}
+                {showCleared ? '− hide' : '+'} {clearedDebts.length} cleared or zero
               </button>
+            )}
 
-              {problem && (
-                <div
-                  className="tiny"
-                  style={{ color: 'var(--red)', marginTop: 9, textAlign: 'center' }}
+            <div className="g2" style={{ marginTop: 15 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>Cash</div>
+                {cash.length === 0 ? (
+                  <div className="tiny muted" style={{ padding: '10px 0' }}>
+                    No cash accounts on record.
+                  </div>
+                ) : (
+                  <table className="tbl">
+                    <tbody>{cash.map(cashRow)}</tbody>
+                  </table>
+                )}
+              </div>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>Assets</div>
+                <AccountsAssets
+                  variant="table"
+                  values={assetValues}
+                  onChange={setAssetValue}
+                />
+              </div>
+            </div>
+
+            {saveBlock(true)}
+          </div>
+
+          <div className="acct-sub-mobile">
+            {/* Three filters rather than three stacked sections: a phone scrolls
+                past what it is not being asked about, and a debt queue read
+                through four vehicles is not a queue. */}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+              {(['debts', 'cash', 'assets'] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  className="pill"
+                  onClick={() => setTab(t)}
+                  style={
+                    tab === t
+                      ? { background: 'var(--ink)', color: '#fff', textTransform: 'capitalize' }
+                      : {
+                          background: 'var(--white)',
+                          color: 'var(--steel)',
+                          border: '1px solid var(--line)',
+                          textTransform: 'capitalize',
+                        }
+                  }
                 >
-                  {problem}
-                </div>
-              )}
+                  {t}
+                </button>
+              ))}
+            </div>
 
-              {lastManual?.balanceUpdatedAt && (
-                <div className="tiny muted tnum" style={{ marginTop: 9, textAlign: 'center' }}>
-                  Last saved {relativeTime(lastManual.balanceUpdatedAt)}
-                  {lastSavedBy ? ` by ${lastSavedBy}` : ''}
-                </div>
-              )}
-            </>
-          )}
+            {tab === 'debts' && (
+              <>
+                {mobileDebts.map(mobileRow)}
+                {showCleared && clearedDebts.map(mobileRow)}
+                {mobileHidden.length > 0 && (
+                  <button
+                    type="button"
+                    className="tiny muted tnum"
+                    onClick={() => setShowAllDebts(true)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      padding: '7px 0 0',
+                      font: 'inherit',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    + {mobileHidden.length} more {'·'} {money(hiddenTotal)}
+                  </button>
+                )}
+                {clearedDebts.length > 0 && (
+                  <button
+                    type="button"
+                    className="tiny muted"
+                    onClick={() => setShowCleared((v) => !v)}
+                    style={{
+                      display: 'block',
+                      background: 'none',
+                      border: 'none',
+                      padding: '7px 0 0',
+                      font: 'inherit',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {showCleared ? '− hide' : '+'} {clearedDebts.length} cleared or zero
+                  </button>
+                )}
+              </>
+            )}
 
-          {/*
-            AFTER the save button, deliberately, and outside the block that owns
-            it. Everything above is one input form: three tables of accounts
-            whose typed balances are collected in `values`/`seed` and written as
-            balance snapshots by that one button. An asset has no snapshot row —
-            it is edited and saved on its own line — so putting it among those
-            tables would file it under a button labelled "Save balances" that
-            could never save it. It renders whether or not there is a manual
-            account, which is why it sits outside that conditional too.
-          */}
-          <AssetsTable onSaved={refresh} />
+            {tab === 'cash' && cash.map(mobileRow)}
+
+            {tab === 'assets' && (
+              <AccountsAssets variant="rows" values={assetValues} onChange={setAssetValue} />
+            )}
+
+            {saveBlock(false)}
+          </div>
         </>
       )}
+    </div>
+  )
+}
+
+/** One of the three figures across the top. The label is smaller than the figure. */
+function Stat({ label, figure, grow }: { label: string; figure: string; grow?: boolean }) {
+  return (
+    <div className="stat" style={grow ? { flex: 1, padding: '10px 11px' } : undefined}>
+      <div className="tiny muted" style={{ fontWeight: 700 }}>
+        {label}
+      </div>
+      <div className="tnum" style={{ fontSize: grow ? 16 : 20, fontWeight: 800, marginTop: 2 }}>
+        {figure}
+      </div>
     </div>
   )
 }
@@ -519,6 +905,97 @@ function SkeletonRows({ count }: { count: number }) {
           <div className="skeleton" style={{ height: 13, width: 78 }} />
         </div>
       ))}
+    </div>
+  )
+}
+
+/**
+ * The two ways an account gets onto this page, behind one disclosure.
+ *
+ * Collapsed by default because adding an account is rare and reading the
+ * balances is the daily act. It stays ABOVE the tables, because the last
+ * time it sat below them it was reported missing while it was on screen.
+ *
+ * Two DISTINCT routes, each labelled with the case it is for. A prominent
+ * "Connect a bank" above a faint "add by hand" read as one real action and one
+ * afterthought. Store cards are the whole reason the second route exists — no
+ * aggregator reaches them — so it says so.
+ */
+function AddAccount({
+  owners,
+  unlinkedCount,
+  onLink,
+  onAdded,
+}: {
+  owners: string[]
+  unlinkedCount: number
+  onLink: () => void
+  onAdded: () => void
+}) {
+  const [open, setOpen] = useState(false)
+
+  if (!open) {
+    return (
+      <div style={{ marginBottom: 15 }}>
+        <button
+          type="button"
+          className="tiny muted"
+          onClick={() => setOpen(true)}
+          style={{
+            background: 'none',
+            border: 'none',
+            padding: 0,
+            font: 'inherit',
+            cursor: 'pointer',
+            textDecoration: 'underline',
+          }}
+        >
+          Add an account
+        </button>
+        {unlinkedCount > 0 && (
+          <span className="tiny muted tnum">
+            {' · '}
+            {unlinkedCount} {unlinkedCount === 1 ? 'debt shows' : 'debts show'} a figure entered by
+            hand rather than a live one
+          </span>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="card-panel dk-panel-cap" style={{ marginBottom: 20 }}>
+      <div className="sm" style={{ fontWeight: 700, marginBottom: 3 }}>
+        Add an account
+      </div>
+      <div className="tiny muted" style={{ marginBottom: 11, lineHeight: 1.55 }}>
+        Two ways in, depending on whether a bank connection can reach it.
+      </div>
+
+      <button className="btn" onClick={onLink}>
+        Connect a bank
+      </button>
+      <div className="tiny muted" style={{ margin: '5px 0 13px', lineHeight: 1.5 }}>
+        For a bank or card that can be signed into. Balances then update on their own.
+      </div>
+
+      <AddDebt owners={owners} onAdded={onAdded} />
+
+      <button
+        type="button"
+        className="tiny muted"
+        onClick={() => setOpen(false)}
+        style={{
+          background: 'none',
+          border: 'none',
+          padding: '10px 0 0',
+          font: 'inherit',
+          cursor: 'pointer',
+          textDecoration: 'underline',
+        }}
+      >
+        Close
+      </button>
     </div>
   )
 }
@@ -654,7 +1131,7 @@ function AddDebt({ owners, onAdded }: { owners: string[]; onAdded: () => void })
       </label>
 
       {err && (
-        <div className="tiny" style={{ color: 'var(--red)', marginTop: 8 }}>{err}</div>
+        <div className="tiny is-bad" style={{ marginTop: 8 }}>{err}</div>
       )}
 
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
@@ -665,8 +1142,10 @@ function AddDebt({ owners, onAdded }: { owners: string[]; onAdded: () => void })
           Cancel
         </button>
       </div>
-      <div className="tiny muted" style={{ marginTop: 8, lineHeight: 1.5 }}>
-        It slots into the payoff queue by rate — highest first — so nothing needs
+      {/* A caveat about what the form above does, so it is a rule: a thin left
+          border under the thing it qualifies, never a filled block. */}
+      <div className="rule">
+        It slots into the payoff queue by rate, highest first, so nothing needs
         reordering by hand.
       </div>
     </div>
@@ -733,7 +1212,7 @@ function EditTerms({ account, onSaved }: { account: Account; onSaved: () => void
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="tiny muted"
+        className="tiny muted tnum"
         aria-label={`Edit the rate, minimum and due day for ${account.name}`}
         style={{
           background: 'none',
@@ -744,7 +1223,10 @@ function EditTerms({ account, onSaved }: { account: Account; onSaved: () => void
           textDecoration: 'underline',
         }}
       >
-        terms
+        {/* The due date has no column of its own in the new table, so the control
+            that sets it carries it, and a debt with nothing on record says so
+            rather than going quiet. */}
+        {dueLabel(account.next_due_on) ?? 'terms'}
       </button>
     )
   }
@@ -789,14 +1271,18 @@ function EditTerms({ account, onSaved }: { account: Account; onSaved: () => void
         </label>
       </div>
 
-      <div className="tiny muted" style={{ marginTop: 6, lineHeight: 1.45 }}>
+      {/* The same caveat the old panel carried, now as a rule. On a connected
+          account the nightly Plaid write is authoritative, so anything typed
+          here is temporary, and a field that silently reverts overnight is worse
+          than one that says it will. */}
+      <div className="rule">
         {account.plaid_account_id
           ? 'This account is connected, so the bank overwrites the rate, minimum and due date each night. Anything set here holds only until it next reports.'
-          : 'The day of the month, not a date — it rolls forward on its own. Changing the rate re-orders the payoff queue.'}
+          : 'The day of the month, not a date. It rolls forward on its own, and changing the rate re-orders the payoff queue.'}
       </div>
 
       {err && (
-        <div className="tiny" style={{ color: 'var(--red)', marginTop: 6 }}>
+        <div className="tiny is-bad" style={{ marginTop: 6 }}>
           {err}
         </div>
       )}

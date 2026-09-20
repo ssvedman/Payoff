@@ -1,20 +1,18 @@
 import { HashRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './lib/auth'
 import { DataProvider } from './lib/data'
-import { ViewModeProvider } from './lib/viewMode'
 import BottomNav from './components/BottomNav'
 import Sidebar from './components/Sidebar'
-import { TopBar } from './components/ViewToggle'
 import Loading from './components/Loading'
 
 import SignIn from './pages/SignIn'
 import Home from './pages/Home'
-import Month from './pages/Month'
+import Spending from './pages/Spending'
 import Activity from './pages/Activity'
 import Accounts from './pages/Accounts'
 import Settings from './pages/Settings'
 import LinkBank from './pages/LinkBank'
-import History from './pages/History'
+import More from './pages/More'
 import Progress from './pages/Progress'
 import Calendar from './pages/Calendar'
 import Business from './pages/Business'
@@ -42,14 +40,11 @@ function Protected() {
   // with it.
   return (
     <DataProvider>
-      <ViewModeProvider>
-        <Sidebar />
-        <div className="shell">
-          <TopBar />
-          <Outlet />
-        </div>
-        <BottomNav />
-      </ViewModeProvider>
+      <Sidebar />
+      <div className="shell">
+        <Outlet />
+      </div>
+      <BottomNav />
     </DataProvider>
   )
 }
@@ -93,15 +88,22 @@ function Shell() {
 
       <Route element={<Protected />}>
         <Route path="/"         element={<Home />} />
-        <Route path="/month"    element={<Month />} />
+        <Route path="/spending" element={<Spending />} />
         <Route path="/progress" element={<Progress />} />
         <Route path="/calendar" element={<Calendar />} />
-        <Route path="/business" element={<Business />} />
-        <Route path="/activity" element={<Activity />} />
         <Route path="/accounts" element={<Accounts />} />
+        <Route path="/activity" element={<Activity />} />
+        <Route path="/business" element={<Business />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/more"     element={<More />} />
         <Route path="/link"     element={<LinkBank />} />
-        <Route path="/history"  element={<History />} />
+
+        {/* Month and History merged into Spending, which is the same page for
+            any month. Both old paths are kept as redirects rather than dropped:
+            they are in browser history and on at least one home screen, and a
+            bookmark that silently lands on Home reads as the page being gone. */}
+        <Route path="/month"   element={<Navigate to="/spending" replace />} />
+        <Route path="/history" element={<Navigate to="/spending" replace />} />
       </Route>
 
       {/* Catch-all: the auth *error* redirect can still clobber the fragment, so

@@ -1,18 +1,26 @@
-import { NavLink } from 'react-router-dom'
-import { NAV_ITEMS } from '../lib/navItems'
+import { NavLink, useLocation } from 'react-router-dom'
+import { MORE_ITEMS, NAV_ITEMS } from '../lib/navItems'
 
 /**
- * Glyphs match mockups.html.
+ * The phone's bottom bar: Home, Spending, Progress, Calendar, More.
  *
- * History was added after the mockups and had no entry here, so the only way in
- * was one underlined text link on Home — the app's only view of how the balances
- * have actually moved, reachable by accident.
+ * Five is the limit before the labels stop being readable, so the four items
+ * that do not fit live behind More — which is a route, not an overlay, so the
+ * back button works and the page can be linked to.
  *
- * The list now lives in lib/navItems.ts so this bar and the desktop sidebar
- * cannot drift apart. History is `inBottom: false` — seven is what fits across a
- * phone — and it keeps its place in the sidebar, which has the room.
+ * The list lives in lib/navItems.ts, and More is generated from the same list.
+ * An item added there appears either in this bar or behind More, never nowhere:
+ * a page reachable only by typing its URL is a page nobody has.
  */
 export default function BottomNav() {
+  const { pathname } = useLocation()
+
+  // More stays lit while any page behind it is open, so the bar never shows
+  // nothing selected. NavLink alone would only match /more itself, leaving
+  // Accounts and Business looking like they belong to no tab at all.
+  const moreIsOpen =
+    pathname === '/more' || MORE_ITEMS.some((it) => pathname.startsWith(it.to))
+
   return (
     <nav className="nav" aria-label="Main">
       <div className="nav__inner">
@@ -27,6 +35,15 @@ export default function BottomNav() {
             {it.label}
           </NavLink>
         ))}
+
+        <NavLink
+          to="/more"
+          className={moreIsOpen ? 'on' : undefined}
+          aria-current={moreIsOpen ? 'page' : undefined}
+        >
+          <i aria-hidden="true">≡</i>
+          More
+        </NavLink>
       </div>
     </nav>
   )

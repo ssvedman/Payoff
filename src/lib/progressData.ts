@@ -13,9 +13,9 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from './supabase'
-import { isCleared, type Account } from './data'
+import type { Account } from './data'
 import { parseDateOnly } from './format'
-import { round2, type SimDebt, type SimResult } from './avalanche'
+import { round2 } from './avalanche'
 import type { SnapshotSource } from './database.types'
 
 /** PostgREST serialises numeric as the string "31000.00". Coerce at the boundary. */
@@ -208,57 +208,6 @@ export function describeSnapshots(
   }
 }
 
-/**
- * Interest the no-roll counterfactual would have accrued over its first `months`
- * months — the figure the observed interest is measured against.
- *
- * SimResult carries only the run total, and a "so far" figure needs the split by
- * month, so the recurrence is run again here over the same debts. It is the
- * recurrence from simulateMinimumsOnly and nothing else: accrue apr/12, pay the
- * account's own minimum, redirect nothing.
- *
- * Running it twice is a chance for the two to drift apart, so the whole run is
- * totalled and checked against noRollSim.totalInterest before any prefix of it is
- * returned. A mismatch returns null and the page reports the figure as
- * unavailable, which is the only honest thing to print when two computations of
- * the same number disagree.
- */
-export function noRollInterestSoFar(
-  debts: Account[],
-  noRollSim: SimResult,
-  months: number,
-): number | null {
-  const simDebts: SimDebt[] = debts.map((d) => ({
-    id: d.id,
-    name: d.name,
-    apr: d.apr,
-    minimumPayment: d.minimum_payment,
-    payoffOrder: d.payoff_order,
-    balance: isCleared(d) ? 0 : d.balance,
-  }))
-
-  let open = simDebts.filter((d) => d.balance > 0).map((d) => ({ ...d }))
-  const byMonth: number[] = []
-  let total = 0
-
-  for (let m = 0; m < noRollSim.months && open.length > 0; m++) {
-    let accrued = 0
-    for (const d of open) {
-      const interest = round2(d.balance * ((d.apr ?? 0) / 100 / 12))
-      d.balance = round2(d.balance + interest)
-      accrued = round2(accrued + interest)
-      total = round2(total + interest)
-      const pay = Math.min(d.minimumPayment, d.balance)
-      d.balance = round2(d.balance - pay)
-    }
-    byMonth.push(accrued)
-    open = open.filter((d) => d.balance > 0)
-  }
-
-  if (Math.abs(total - noRollSim.totalInterest) > 0.01) return null
-
-  return round2(byMonth.slice(0, months).reduce((s, n) => s + n, 0))
-}
 
 interface ProgressData {
   loading: boolean

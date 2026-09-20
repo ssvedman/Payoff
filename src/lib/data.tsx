@@ -7,10 +7,9 @@ import {
   inAvalancheOrder,
   monthlyPool,
   round2,
-  simulate,
-  simulateMinimumsOnly,
   type SimDebt,
 } from './avalanche'
+import type { PlanProjection, PlanVersion } from './planVersion'
 import type {
   AccountRow,
   AssetRow,
@@ -35,6 +34,15 @@ export interface Account extends Omit<AccountRow, 'apr' | 'minimum_payment' | 'o
   /** The snapshot before the latest, for "balance rose" reporting. null when there is only one. */
   previousBalance: number | null
   balanceAsOf: string | null
+  /**
+   * When the PREVIOUS reading was taken, so a movement can be dated.
+   *
+   * "rose $83" needs a since-when or it is not a fact anyone can check.
+   * "yesterday" would be wrong on the typed-in accounts, which are updated
+   * roughly monthly, and "since the last reading" is true but says nothing.
+   * The date is accurate in both cases.
+   */
+  previousBalanceAsOf: string | null
   balanceSource: string | null
   enteredBy: string | null
   balanceUpdatedAt: string | null
@@ -155,6 +163,33 @@ interface DataState {
   businessAccountIds: Set<string>
   budgetLines: BudgetLine[]
   plan: PlanSettings | null
+  /**
+   * The current plan version, or null when no version has been generated.
+   *
+   * null is a real state the pages must handle by saying so. It is NOT a cue to
+   * simulate something instead — see planVersion.ts.
+   */
+  /**
+   * Every plan version, oldest first. Empty when none has been generated.
+   *
+   * Holding all of them is what lets Progress draw the original plan beside
+   * the current one after a revision.
+   */
+  planVersions: PlanVersion[]
+  /**
+   * Every stored projection row for the current version, both scenarios.
+   *
+   * Read, never computed. The chart draws these; nothing re-derives them.
+   */
+  planProjections: PlanProjection[]
+  /**
+   * Set when the projections read itself failed, as opposed to there being
+   * none. The two are indistinguishable from an empty array and mean opposite
+   * things: one is "no plan has been generated yet", the other is "the plan
+   * exists and we could not fetch it". Drawing nothing is right for the first
+   * and a lie for the second.
+   */
+  planProjectionsError: string | null
   rules: MerchantRuleRow[]
   prefs: NotificationPrefRow[]
   memberNames: Record<string, string>
@@ -211,6 +246,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
     allTransactions: [],
     budgetLines: [],
     plan: null,
+    planVersions: [],
+    planProjections: [],
+    planProjectionsError: null,
     rules: [],
     prefs: [],
     memberNames: {},
@@ -242,6 +280,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
       itemsRes,
       acctProgRes,
       assetsRes,
+      planVersionRes,
+      planProjRes,
     ] = await Promise.all([
       supabase.from('accounts').select('*').order('payoff_order'),
       supabase.from('account_balance_current').select('*'),
@@ -265,6 +305,18 @@ export function DataProvider({ children }: { children: ReactNode }) {
       supabase.from('plaid_sync_status').select('last_synced, status, institution'),
       supabase.from('account_progress').select('*'),
       supabase.from('assets').select('*').order('estimated_value', { ascending: false }),
+      // The frozen plan. Read, never recomputed — see planVersion.ts.
+      //
+      // EVERY version, not just the current one. A revision keeps the version
+      // it replaces so the original target stays visible on Progress, which is
+      // the entire reason versions exist; fetching only is_current would make
+      // the comparison impossible at the exact moment it starts to matter.
+      supabase.from('plan_versions').select('*').order('version'),
+      supabase
+        .from('plan_projections')
+        .select('*')
+        .order('scenario')
+        .order('month_index'),
     ])
 
     const firstError =
@@ -291,6 +343,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         balance: bal ? num(bal.balance) : num(a.opening_balance),
         previousBalance: bal ? numOrNull(bal.prev_balance) : null,
         balanceAsOf: (bal?.as_of as string) ?? null,
+        previousBalanceAsOf: (bal?.prev_as_of as string) ?? null,
         balanceSource: (bal?.source as string) ?? null,
         enteredBy: (bal?.entered_by as string) ?? null,
         balanceUpdatedAt: (bal?.created_at as string) ?? null,
@@ -356,6 +409,24 @@ export function DataProvider({ children }: { children: ReactNode }) {
             plan_started_on: (planRes.data as Record<string, unknown>).plan_started_on as string,
           }
         : null,
+      // The frozen plan, coerced at the boundary like every other numeric.
+      // A missing version is a state the pages report; it is never a cue to
+      // simulate a replacement — see planVersion.ts.
+      planVersions: (planVersionRes.data ?? []).map((r: Record<string, unknown>) => ({
+        ...(r as unknown as PlanVersion),
+        attack_fund: num(r.attack_fund),
+        monthly_savings: num(r.monthly_savings),
+        deposit_target: num(r.deposit_target),
+        baseline_debt: num(r.baseline_debt),
+      })),
+      planProjections: (planProjRes.data ?? []).map((r: Record<string, unknown>) => ({
+        ...(r as unknown as PlanProjection),
+        projected_debt: num(r.projected_debt),
+        cumulative_interest: num(r.cumulative_interest),
+        projected_savings: num(r.projected_savings),
+        projected_net_worth: numOrNull(r.projected_net_worth),
+      })),
+      planProjectionsError: planVersionRes.error?.message ?? planProjRes.error?.message ?? null,
       rules: (rulesRes.data ?? []) as MerchantRuleRow[],
       prefs: (prefsRes.data ?? []) as NotificationPrefRow[],
       memberNames,
@@ -441,15 +512,6 @@ export function usePayoffPlan() {
       balance: isCleared(d) ? 0 : d.balance,
     }))
 
-    const sim = simulate(simDebts, plan.attack_fund)
-
-    /**
-     * The counterfactual the Progress tab measures the plan against: every debt
-     * pays its own minimum forever and nothing is ever redirected. Run over the
-     * SAME simDebts array as the plan, so the two lines start from one total.
-     */
-    const noRollSim = simulateMinimumsOnly(simDebts)
-
     /**
      * What goes out to debt each month: every minimum plus the attack fund.
      *
@@ -470,8 +532,6 @@ export function usePayoffPlan() {
       cleared,
       progress: openingTotal > 0 ? cleared / openingTotal : 0,
       target,
-      sim,
-      noRollSim,
       savingsBalance: savings?.balance ?? 0,
       depositTarget: plan.deposit_target,
       monthlySavings: plan.monthly_savings,

@@ -537,7 +537,7 @@ export default function LinkBank() {
       {/* ---- waiting ---- */}
       {phase === 'waiting' && (
         <>
-          <div className="banner banner--amber" style={{ marginBottom: 16 }}>
+          <div className="banner banner--neutral" style={{ marginBottom: 16 }}>
             <div className="sm" style={{ fontWeight: 700 }}>Waiting for your bank sign-in</div>
             <div className="tiny" style={{ marginTop: 3, lineHeight: 1.5 }}>
               Finish signing in on the Plaid tab. Leave this page open — it checks every

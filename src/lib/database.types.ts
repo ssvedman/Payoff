@@ -277,6 +277,37 @@ export type BudgetLineRuleRow = {
   created_at: string
 }
 
+/**
+ * A frozen plan. numeric columns arrive from PostgREST as strings; data.tsx
+ * coerces them at the boundary, as it does for every other numeric.
+ */
+export type PlanVersionRow = {
+  id: string
+  version: number
+  effective_from: string
+  attack_fund: string | number
+  monthly_savings: string | number
+  deposit_target: string | number
+  baseline_debt: string | number
+  reason: string | null
+  is_current: boolean
+  created_at: string
+}
+
+/** One stored month of one scenario. Never updated — the table forbids it. */
+export type PlanProjectionRow = {
+  id: string
+  plan_version_id: string
+  scenario: 'plan' | 'minimums_only'
+  month_index: number
+  projected_on: string
+  projected_debt: string | number
+  cumulative_interest: string | number
+  projected_savings: string | number
+  projected_net_worth: string | number | null
+  accounts_cleared: string[] | null
+}
+
 type T<Row, Ins = Partial<Row>, Upd = Partial<Row>> = { Row: Row; Insert: Ins; Update: Upd; Relationships: [] }
 
 export type Database = {
@@ -288,6 +319,8 @@ export type Database = {
       merchant_rules: T<MerchantRuleRow>
       budget_lines: T<BudgetLineRow>
       plan_settings: T<PlanSettingsRow>
+      plan_versions: T<PlanVersionRow>
+      plan_projections: T<PlanProjectionRow>
       household_members: T<HouseholdMemberRow>
       push_subscriptions: T<PushSubscriptionRow>
       notification_prefs: T<NotificationPrefRow>

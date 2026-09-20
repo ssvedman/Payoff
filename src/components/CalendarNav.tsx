@@ -1,7 +1,8 @@
 import type { CalendarMonth } from '../lib/calendar'
+import { MONTH_NAMES } from '../lib/format'
 
 /**
- * The ‹ October 2026 › control for /calendar.
+ * The month stepper for /calendar, sitting to the right of the page title.
  *
  * MonthNav from monthView.tsx is deliberately not reused. That one pages
  * BACKWARDS, from this month to the oldest recorded transaction, and disables
@@ -12,54 +13,71 @@ import type { CalendarMonth } from '../lib/calendar'
  * which a projection built from a 180-day window is arithmetic rather than
  * information.
  *
- * Both ends say why they stop, in the button's title, rather than presenting a
- * dead control with no explanation.
+ * Both ends still say why they stop, in the button's title, rather than
+ * presenting a dead control with no explanation.
+ *
+ * On a desktop the two neighbouring months are named — "‹ September · November ›"
+ * — because there is room to say where the arrows go. On a phone there is not,
+ * so they are bare chevrons.
  */
-export default function CalendarNav({ month }: { month: CalendarMonth }) {
+export default function CalendarNav({ month, wide }: { month: CalendarMonth; wide: boolean }) {
+  const prev = MONTH_NAMES[(month.anchor.getMonth() + 11) % 12]
+  const next = MONTH_NAMES[(month.anchor.getMonth() + 1) % 12]
+
   return (
-    <div
+    <div className="tiny muted" style={{ display: 'flex', alignItems: 'baseline', gap: 4, flex: '0 0 auto' }}>
+      <Step
+        label={wide ? `‹ ${prev}` : '‹'}
+        aria="Previous month"
+        disabled={month.atFloor}
+        title={month.atFloor ? 'Nothing is projected before this month' : `Go to ${prev}`}
+        onClick={month.goPrev}
+      />
+      {wide && <span aria-hidden="true">&nbsp;·&nbsp;</span>}
+      <Step
+        label={wide ? `${next} ›` : '›'}
+        aria="Next month"
+        disabled={month.atCeiling}
+        title={month.atCeiling ? 'Three months is as far ahead as this projects' : `Go to ${next}`}
+        onClick={month.goNext}
+      />
+    </div>
+  )
+}
+
+function Step({
+  label,
+  aria,
+  disabled,
+  title,
+  onClick,
+}: {
+  label: string
+  aria: string
+  disabled: boolean
+  title: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={aria}
+      title={title}
+      disabled={disabled}
+      onClick={onClick}
       style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 10,
-        marginBottom: 12,
-        borderBottom: '1px solid var(--line)',
-        paddingBottom: 10,
+        appearance: 'none',
+        background: 'none',
+        border: 'none',
+        padding: '4px 2px',
+        font: 'inherit',
+        color: 'inherit',
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.35 : 1,
+        whiteSpace: 'nowrap',
       }}
     >
-      <button
-        type="button"
-        className="btn ghost"
-        style={{ width: 'auto', padding: '6px 12px', fontSize: 13, opacity: month.atFloor ? 0.35 : 1 }}
-        aria-label="Previous month"
-        title={month.atFloor ? 'Nothing is projected before this month' : 'Previous month'}
-        disabled={month.atFloor}
-        onClick={month.goPrev}
-      >
-        ‹
-      </button>
-
-      <div style={{ textAlign: 'center', lineHeight: 1.25 }}>
-        <div className="sm tnum" style={{ fontWeight: 700 }}>
-          {month.label}
-        </div>
-        {!month.thisMonth && (
-          <div className="tiny muted">projected</div>
-        )}
-      </div>
-
-      <button
-        type="button"
-        className="btn ghost"
-        style={{ width: 'auto', padding: '6px 12px', fontSize: 13, opacity: month.atCeiling ? 0.35 : 1 }}
-        aria-label="Next month"
-        title={month.atCeiling ? 'Three months is as far ahead as this projects' : 'Next month'}
-        disabled={month.atCeiling}
-        onClick={month.goNext}
-      >
-        ›
-      </button>
-    </div>
+      {label}
+    </button>
   )
 }

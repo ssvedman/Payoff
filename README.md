@@ -62,6 +62,65 @@ wrong reason.
 
 ---
 
+## The frozen plan
+
+The Progress chart used to simulate both projection lines from **current**
+balances on every render, so "the plan" moved whenever a balance moved. A target
+that shifts to meet you cannot be missed, and the comparison the page exists to
+make was impossible.
+
+Both lines are now generated once, stored in `plan_projections`, and read back.
+Only the actual line changes.
+
+### How the freeze is enforced
+
+It is structural, not a rule anyone has to remember:
+
+- Household members hold `SELECT` and nothing else on `plan_versions` and
+  `plan_projections`. `INSERT`/`UPDATE`/`DELETE` are revoked from `anon` and
+  `authenticated`, so the app physically cannot write a projection.
+- A `before update` trigger on `plan_projections` raises, so even a service-role
+  mistake cannot rewrite a stored month in place.
+- A partial unique index on `is_current` makes two current versions
+  unrepresentable.
+- `usePayoffPlan()` no longer returns a simulation. `simulate()` still exists for
+  the generator, but nothing a page can reach calls it, so there is no fallback
+  path to accidentally take.
+- When no version exists, `useFrozenPlan()` returns `status: 'missing'` and the
+  page says so. **It must never fall back to a live calculation** — a silent
+  fallback is how the frozen line quietly unfreezes, and it would be invisible:
+  the chart would look right, and be wrong only in the way that matters.
+
+### Revising the plan
+
+Revising is deliberate and run by hand. There is no button that regenerates
+projections, on purpose: it is a one-way door, and one tap is the wrong distance
+from it.
+
+1. Write a state file describing the world as at the new plan's effective date
+   (see `Build Docs/plan-v1-state.json` for the shape), with the next `version`
+   number and a `reason`.
+2. Generate and review the SQL:
+
+       node scripts/generate-plan-version.mjs <state.json> > version-N.sql
+
+   The script prints the resulting months and interest to stderr. Read them
+   before going further; if they are not what you expect, the state file is
+   wrong, not the plan.
+3. Check the figures round-trip:
+
+       node scripts/plan-version-checksums.mjs <state.json>
+
+4. Apply the SQL. It refuses to run if that version already exists, and it steps
+   the previous version down to `is_current = false` rather than deleting it.
+5. Confirm the stored checksums match step 3.
+
+Version 1 is never edited. Progress can then offer "original plan" alongside the
+current one, so a revision reads as a decision that was made rather than as the
+target having always been where you are.
+
+**If something would change a stored projection, stop and ask.**
+
 ## Conventions that matter
 
 **Plaid amounts are positive for money out.** Purchases are positive; payments,

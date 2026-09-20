@@ -16,7 +16,12 @@ import type { Bucket } from '../lib/database.types'
 
 export const BUCKETS: { key: Bucket; label: string; bg: string; tx: string }[] = [
   { key: 'fixed', label: 'Fixed', bg: 'var(--neutral-bg)', tx: 'var(--neutral-tx)' },
-  { key: 'optional', label: 'Optional', bg: 'var(--amber-bg)', tx: 'var(--amber-tx)' },
+  // Neutral, like Fixed and Transfer. The mockup drew this pill amber, which
+  // contradicts the rule the same mockup states: amber is the current payoff
+  // target and nothing else. A bucket label is not a target, and this pill
+  // appears on two pages at once, so it was the largest single dilution of the
+  // one colour the app reserves.
+  { key: 'optional', label: 'Optional', bg: 'var(--neutral-bg)', tx: 'var(--neutral-tx)' },
   { key: 'attack', label: 'Attack', bg: 'var(--green-bg)', tx: 'var(--green-tx)' },
   { key: 'savings', label: 'Savings', bg: 'var(--green-bg)', tx: 'var(--green-tx)' },
   { key: 'income', label: 'Income', bg: 'var(--green-bg)', tx: 'var(--green-tx)' },

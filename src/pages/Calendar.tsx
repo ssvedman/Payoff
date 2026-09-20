@@ -1,11 +1,15 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import CalendarFortnight from '../components/CalendarFortnight'
 import CalendarNav from '../components/CalendarNav'
+import CalendarSeries from '../components/CalendarSeries'
+import { eventsOf, lowestOf, ordinalDay, shortDay } from '../components/CalendarText'
 import MonthGrid from '../components/MonthGrid'
-import { useCalendar, useCalendarMonth, type DayCell, type DuePayment, type ExpectedFlow } from '../lib/calendar'
-import { cadenceLabel, type Series } from '../lib/cadence'
-import { dayHeading, isoDate, money, moneyCents, parseDateOnly, signedAmount } from '../lib/format'
+import { useCalendar, useCalendarMonth, type DayCell } from '../lib/calendar'
+import { cadenceLabel } from '../lib/cadence'
+import { dayHeading, isoDate, money, moneyCents, parseDateOnly } from '../lib/format'
 import { useRecurringOverrides } from '../lib/recurring'
-import { useData } from '../lib/data'
+import { useData, usePayoffPlan } from '../lib/data'
+import type { Series } from '../lib/cadence'
 
 /**
  * /calendar — when money moves, and where household checking is projected to sit
@@ -14,9 +18,10 @@ import { useData } from '../lib/data'
  * WHY this page exists, written down so nobody softens it later: the checking
  * accounts repeatedly ran to single digits and the toll accounts went negative,
  * which cost real money in pay-by-plate rates and violation fees before anyone
- * noticed. So the page names any day the projection falls below zero, and says
- * only that. It does not suggest moving money, it does not encourage, and it does
- * not congratulate. A report of the position is the whole product.
+ * noticed. So the page names every day the projection falls below zero and the
+ * day it sits lowest, and says only that. It does not suggest moving money, it
+ * does not encourage, and it does not congratulate. A report of the position is
+ * the whole product.
  *
  * Equally important is what it refuses to claim. The projection counts scheduled
  * debt payments and income whose cadence is actually derivable from six months of
@@ -25,18 +30,43 @@ import { useData } from '../lib/data'
  * would be reassuring and wrong, which on this particular screen is the most
  * expensive thing it could be. That limitation is printed on the page rather than
  * buried here.
+ *
+ * The layout splits at 1024px into two different views of the same month: a
+ * seven-column grid on a desktop, a fortnight list on a phone. See useWideScreen.
  */
 
-/** "Fri 25 Sep" — short enough for a list row. */
-function shortDay(iso: string): string {
-  return parseDateOnly(iso).toLocaleDateString('en-US', {
-    weekday: 'short',
-    day: 'numeric',
-    month: 'short',
-  })
+/**
+ * Whether the desktop layout is on, read from the same 1024px breakpoint
+ * index.css uses.
+ *
+ * A JS media query rather than a CSS one, because the rule on this page is not
+ * "hide the grid on a phone" but "do not build it at all". A display:none grid is
+ * still thirty-five cells of DOM for a screen reader to walk, and the two layouts
+ * are genuinely different content — the grid carries the shape of the month, the
+ * list carries the next fourteen days in full — rather than one layout at two
+ * sizes.
+ */
+function useWideScreen(): boolean {
+  const query = '(min-width: 1024px)'
+  const [wide, setWide] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia(query).matches,
+  )
+
+  useEffect(() => {
+    const mq = window.matchMedia(query)
+    const onChange = (e: MediaQueryListEvent) => setWide(e.matches)
+    // Read once on mount as well: the width can have changed between the initial
+    // state being computed and the listener being attached.
+    setWide(mq.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+
+  return wide
 }
 
 export default function Calendar() {
+  const wide = useWideScreen()
   const month = useCalendarMonth()
   const model = useCalendar(month.anchor)
   const [selected, setSelected] = useState<string | null>(null)
@@ -47,6 +77,16 @@ export default function Calendar() {
 
   const { dismiss, remove, confirm } = useRecurringOverrides()
   const { accounts } = useData()
+
+  /**
+   * The account the avalanche is currently attacking.
+   *
+   * This is the only thing on the page allowed to be amber. usePayoffPlan()
+   * returns null until the plan row lands, so the grid simply has no amber day
+   * for a moment rather than guessing at one.
+   */
+  const plan = usePayoffPlan()
+  const targetId = plan?.target?.id ?? null
 
   /** Account id to its display name, for saying where a payment actually went. */
   const accountName = useCallback(
@@ -124,110 +164,105 @@ export default function Calendar() {
     [remove, model],
   )
 
-  /** Every day in the month with anything on it, in order. */
-  const busyDays = useMemo(
-    () => model.weeks.flat().filter((c) => c.inMonth && (c.due.length > 0 || c.expected.length > 0)),
-    [model.weeks],
-  )
+  const cells = useMemo(() => model.weeks.flat(), [model.weeks])
+  const monthCells = useMemo(() => cells.filter((c) => c.inMonth), [cells])
+
+  /**
+   * The day the line comes closest to the floor.
+   *
+   * Not the same thing as the first day below zero, which the model already
+   * reports across the whole three-month horizon. This is the tightest day of
+   * the month ON SCREEN, which is what the header line and the grid's red cell
+   * both name, and it exists whether or not anything goes negative.
+   */
+  const lowest = useMemo(() => lowestOf(monthCells), [monthCells])
 
   const selectedCell = useMemo(
-    () => (selected ? model.weeks.flat().find((c) => c.date === selected) ?? null : null),
-    [model.weeks, selected],
+    () => (selected ? cells.find((c) => c.date === selected) ?? null : null),
+    [cells, selected],
   )
 
   if (model.loading) {
     return (
-      <div className="page">
-        <div className="sect">Calendar</div>
-        <div className="skeleton" style={{ width: '100%', height: 44, marginBottom: 14 }} aria-hidden="true" />
-        {/* Two columns here too: the grid is the tallest thing on the page and
-            must not jump from full width into half of it when the data lands. */}
-        <div className="dk-cols dk-cols--even">
-          <div className="skeleton" style={{ width: '100%', height: 200 }} aria-hidden="true" />
-          <div className="skeleton" style={{ width: '100%', height: 300 }} aria-label="Loading the calendar" />
-        </div>
-      </div>
+      <main className="page">
+        <h1 className="ph">Calendar</h1>
+        <div className="skeleton" style={{ width: '100%', height: 30, margin: '14px 0' }} aria-hidden="true" />
+        <div
+          className="skeleton"
+          style={{ width: '100%', height: wide ? 380 : 260 }}
+          aria-label="Loading the calendar"
+        />
+      </main>
     )
   }
 
   if (model.error) {
     return (
-      <div className="page">
-        <div className="sect">Calendar</div>
+      <main className="page">
+        <h1 className="ph">Calendar</h1>
         {/* A failed read is not an empty month. Saying "nothing due" here would
             be a statement of fact that nobody has checked. */}
-        <div className="banner banner--red sm">Could not load the calendar: {model.error}</div>
-      </div>
+        <div className="banner banner--red sm" style={{ marginTop: 14 }}>
+          Could not load the calendar: {model.error}
+        </div>
+      </main>
     )
   }
 
   return (
-    <div className="page">
-      <div className="sect">Calendar</div>
-
-      <CalendarNav month={month} />
-
-      {/*
-        What the projection is seeded from and what it says on the left; the
-        month itself on the right. On a phone these stack in exactly this order,
-        which is why the seed panel leads: the grid means nothing until you know
-        what balance it is counting down from.
-      */}
-      <div className="dk-cols dk-cols--even">
-      <div>
-      <SeedLine model={model} />
-
-      <ShortfallLine model={model} />
+    <main className="page">
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
+        <h1 className="ph">
+          {wide ? model.monthLabel : model.monthLabel.split(' ')[0]}
+          {/* A month ahead of this one has no settled figures in it at all, and
+              a grid of dates looks the same whether it has happened or not. The
+              old stepper carried this word under the month name; it has to stay
+              somewhere now that the month name is the page title. */}
+          {!month.thisMonth && (
+            <span className="tiny muted" style={{ fontWeight: 500, marginLeft: 8 }}>
+              projected
+            </span>
+          )}
+        </h1>
+        <CalendarNav month={month} wide={wide} />
       </div>
 
-      <div>
-      <MonthGrid
-        weeks={model.weeks}
-        selected={selected}
-        onSelect={(d) => setSelected((cur) => (cur === d ? null : d))}
-      />
+      {wide ? (
+        <>
+          <HeaderLine model={model} lowest={lowest} />
 
-      <MonthTotals model={model} />
+          <MonthGrid
+            cells={cells}
+            targetId={targetId}
+            lowestDate={lowest?.date ?? null}
+            selected={selected}
+            onSelect={(d) => setSelected((cur) => (cur === d ? null : d))}
+          />
 
-      {/* The whole-horizon banner names the FIRST day below zero, which may be
-          three months away. This says what the month on screen does, so stepping
-          to December does not require remembering what the banner said. */}
-      {model.negativeDays.length > 0 && (
-        <div className="tiny" style={{ color: 'var(--red-tx)', marginTop: 8, fontWeight: 700 }}>
-          <span className="tnum">{model.negativeDays.length}</span>{' '}
-          {model.negativeDays.length === 1 ? 'day' : 'days'} in {model.monthLabel} project below
-          zero:{' '}
-          <span className="tnum">{model.negativeDays.map((d) => shortDay(d.date)).join(', ')}</span>.
-        </div>
-      )}
+          <GridRule model={model} />
 
-      {selectedCell && <DayDetail cell={selectedCell} todayIso={todayIso} onClose={() => setSelected(null)} />}
-      </div>
-      </div>
-
-      {/* The month as a list, beside the series the list is derived from. */}
-      <div className="dk-cols dk-cols--even">
-      <div>
-      {/* ---------------- the month, day by day ---------------- */}
-
-      <div className="sect">{model.monthLabel} in order</div>
-      {busyDays.length === 0 ? (
-        <div className="sm muted" style={{ paddingBottom: 6 }}>
-          {model.historyEmpty
-            ? 'No transaction history in the last 180 days, so no cadence could be derived.'
-            : 'Nothing due and nothing expected this month.'}
-        </div>
+          {selectedCell && (
+            <DayDetail
+              cell={selectedCell}
+              targetId={targetId}
+              todayIso={todayIso}
+              onClose={() => setSelected(null)}
+            />
+          )}
+        </>
       ) : (
-        <div style={{ borderTop: '2px solid var(--ink)' }}>
-          {busyDays.map((cell) => (
-            <DayRow key={cell.date} cell={cell} todayIso={todayIso} />
-          ))}
+        <div style={{ marginTop: 10 }}>
+          <CalendarFortnight
+            cells={cells}
+            month={month}
+            targetId={targetId}
+            historyEmpty={model.historyEmpty}
+            todayIso={todayIso}
+          />
+          <GridRule model={model} />
         </div>
       )}
 
-      </div>
-
-      <div>
       {/* ---------------- charges that came back ---------------- */}
 
       {/*
@@ -238,7 +273,7 @@ export default function Calendar() {
         this page's business.
       */}
       {model.resurrected.length > 0 && (
-        <div className="banner banner--red sm" style={{ marginBottom: 14 }}>
+        <div className="banner banner--red sm" style={{ marginTop: 18 }}>
           <div style={{ fontWeight: 700, marginBottom: 4 }}>
             {model.resurrected.length === 1
               ? 'One charge marked as finished has been taken again'
@@ -258,6 +293,19 @@ export default function Calendar() {
         </div>
       )}
 
+      {/*
+        Where the line starts, beside what it runs into.
+
+        On a phone these stack, and the seed comes after the fortnight list
+        rather than before it: the list's own callout already states the
+        projected balance at its lowest point, so the reader is not looking at
+        a countdown from an unstated figure the way they were when the grid led.
+      */}
+      <div className="g2" style={{ marginTop: 18 }}>
+        <SeedPanel model={model} />
+        <HorizonPanel model={model} />
+      </div>
+
       {/* ---------------- what the projection is built from ---------------- */}
 
       <div className="sect">Expected income and outgoings</div>
@@ -267,22 +315,14 @@ export default function Calendar() {
         says so on its own line.
       </div>
 
-      {model.projectedSeries.length === 0 ? (
-        <div className="sm muted">No series regular enough to put a date on.</div>
-      ) : (
-        <div style={{ borderTop: '2px solid var(--ink)' }}>
-          {model.projectedSeries.map((s) => (
-            <SeriesRow
-              key={s.key}
-              s={s}
-              onDismiss={dismissSeries}
-              onSetDay={setSeriesDay}
-              busy={busyKey === s.key}
-              accountName={accountName}
-            />
-          ))}
-        </div>
-      )}
+      <CalendarSeries
+        series={model.projectedSeries}
+        wide={wide}
+        busyKey={busyKey}
+        onDismiss={dismissSeries}
+        onSetDay={setSeriesDay}
+        accountName={accountName}
+      />
 
       {model.overdueSeries.length > 0 && (
         <div className="banner banner--red sm" style={{ marginTop: 12 }}>
@@ -316,14 +356,12 @@ export default function Calendar() {
       */}
       {model.dismissedSeries.length > 0 && (
         <>
-          <div className="sect" style={{ marginTop: 18 }}>
-            Marked as no longer active
-          </div>
+          <div className="sect">Marked as no longer active</div>
           <div className="sm muted" style={{ marginBottom: 8 }}>
             Left out of the projection. If any of them is charged again it returns
             to the list above and is reported at the top of this page.
           </div>
-          <div style={{ borderTop: '2px solid var(--ink)' }}>
+          <div>
             {model.dismissedSeries.map(({ series, override }) => (
               <div key={override.seriesKey} className="row" style={{ alignItems: 'flex-start' }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -372,9 +410,81 @@ export default function Calendar() {
         </div>
       )}
 
-      <NotProjected model={model} />
-      </div>
-      </div>
+      <NotProjected model={model} wide={wide} />
+    </main>
+  )
+}
+
+/* ------------------------------------------------------------------ *
+ * The header line
+ * ------------------------------------------------------------------ */
+
+/**
+ * "$7,341 out · $9,062 in · lowest projected balance $38 on the 14th".
+ *
+ * The two money figures are the month's, not the fortnight's, and "out" adds
+ * scheduled debt payments to detected recurring outgoings. Those two cannot
+ * double-count: the model already suppresses any detected outflow it can match
+ * to a tracked debt, which is the whole reason suppressedSeries exists.
+ */
+function HeaderLine({
+  model,
+  lowest,
+}: {
+  model: ReturnType<typeof useCalendar>
+  lowest: DayCell | null
+}) {
+  const out = model.monthDue + model.monthOut
+
+  return (
+    <div className="sm muted" style={{ margin: '4px 0 13px' }}>
+      <span className="tnum">{money(out)}</span> out · <span className="tnum">{money(model.monthIn)}</span>{' '}
+      in
+      {lowest !== null && (
+        <>
+          {' · '}
+          lowest projected balance{' '}
+          {/* Red only below zero. A tight month is worth stating in bold, but
+              bold ink says "find this" where red would say "this went wrong",
+              and a positive floor means the plan was kept. */}
+          <b
+            className="tnum"
+            style={{
+              color: (lowest.projected as number) < 0 ? 'var(--red-tx)' : 'var(--ink)',
+            }}
+          >
+            {money(lowest.projected as number)} on the {ordinalDay(parseDateOnly(lowest.date).getDate())}
+          </b>
+        </>
+      )}
+    </div>
+  )
+}
+
+/**
+ * The caveats, as a quiet rule rather than a grey block.
+ *
+ * All three of these are things a reader would otherwise assume the grid had
+ * counted, and the last one is the one that matters: a projection that silently
+ * treated variable spending as zero would be reassuring and wrong.
+ */
+function GridRule({ model }: { model: ReturnType<typeof useCalendar> }) {
+  return (
+    <div className="rule">
+      Income cadence is taken from the last 180 days of transactions, so a stream
+      that has no regular pattern is listed below rather than dated here. The
+      projected balance runs across household checking only — savings and the
+      PayPal wallet appear on the grid but are not counted in it, and neither is
+      any business account. Day-to-day variable spending is not counted at all,
+      because there is no figure for it that would not be invented.
+      {model.monthDue > 0 && (
+        <>
+          {' '}
+          Of the money out this month, <span className="tnum">{money(model.monthDue)}</span> is
+          scheduled debt payments and <span className="tnum">{money(model.monthOut)}</span> is
+          recurring outgoings.
+        </>
+      )}
     </div>
   )
 }
@@ -383,62 +493,78 @@ export default function Calendar() {
  * Panels
  * ------------------------------------------------------------------ */
 
-function SeedLine({ model }: { model: ReturnType<typeof useCalendar> }) {
+/** What the running balance counts down from. */
+function SeedPanel({ model }: { model: ReturnType<typeof useCalendar> }) {
   return (
-    <div className="card-panel" style={{ marginBottom: 12 }}>
+    <div className="box">
       <div className="caps">Projected from</div>
-      <div className="tnum" style={{ fontSize: 22, fontWeight: 700, margin: '2px 0 4px' }}>
+      <div className="tnum" style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-.02em', margin: '2px 0 6px' }}>
         {moneyCents(model.seedTotal)}
       </div>
-      <div className="tiny muted">
+
+      <table className="tbl">
+        <tbody>
+          {model.seedAccounts.map((a) => (
+            <tr key={a.label}>
+              <td className="muted">{a.label}</td>
+              <td className="num">{moneyCents(a.balance)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div className="rule">
         <span className="tnum">{model.seedAccounts.length}</span> household checking{' '}
         {model.seedAccounts.length === 1 ? 'account' : 'accounts'}
-        {model.seedAsOf ? <> as of <span className="tnum">{model.seedAsOf}</span></> : ', date unknown'}
+        {model.seedAsOf ? (
+          <>
+            {' '}
+            as of <span className="tnum">{model.seedAsOf}</span>
+          </>
+        ) : (
+          ', date unknown'
+        )}
         {/* PayPal is stored with kind `checking` but is a wallet, not a bank
             account, and nothing on this grid can be paid out of it. It is left
             out of the total and said so here rather than only in a comment. */}
         . The PayPal wallet is not counted as spendable cash.
-      </div>
-
-      <div style={{ marginTop: 8 }}>
-        {model.seedAccounts.map((a) => (
-          <div key={a.label} className="tiny" style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-            <span className="muted">{a.label}</span>
-            <span className="tnum">{moneyCents(a.balance)}</span>
-          </div>
-        ))}
+        {model.actualsApplied > 0 && (
+          <>
+            {' '}
+            <span className="tnum">{model.actualsApplied}</span> settled transactions posted after
+            that snapshot have been applied on top of it. Pending rows are skipped — most issuers
+            already include them in the balance.
+          </>
+        )}
       </div>
 
       {model.seedAsOfDisagrees && (
-        <div className="tiny" style={{ color: 'var(--red-tx)', marginTop: 8 }}>
+        <div className="tiny is-bad" style={{ marginTop: 8 }}>
           These balances were not all read on the same day, so the total mixes
           snapshots taken at different times.
-        </div>
-      )}
-
-      {model.actualsApplied > 0 && (
-        <div className="tiny muted" style={{ marginTop: 6 }}>
-          <span className="tnum">{model.actualsApplied}</span> settled transactions posted after that
-          snapshot have been applied on top of it. Pending rows are skipped — most issuers already
-          include them in the balance.
         </div>
       )}
     </div>
   )
 }
 
-/** The fact this page was built to state. Red, because it is a deviation. */
-function ShortfallLine({ model }: { model: ReturnType<typeof useCalendar> }) {
+/**
+ * The whole three-month horizon, as distinct from the month on screen.
+ *
+ * The header line names the tightest day of the month being looked at. This
+ * names the first day ANYWHERE in the projection that falls below zero, which
+ * may be two months away — so stepping through months does not require
+ * remembering what an earlier month said.
+ */
+function HorizonPanel({ model }: { model: ReturnType<typeof useCalendar> }) {
   if (model.firstNegative) {
     const { date, balance, nextInflowOn } = model.firstNegative
     return (
-      <div className="banner banner--red sm" style={{ marginBottom: 12 }}>
+      <div className="banner banner--red sm">
         <div style={{ fontWeight: 700 }}>
           Projected below zero on <span className="tnum">{shortDay(date)}</span>
         </div>
-        <div className="tnum">
-          {moneyCents(balance)} across household checking.
-        </div>
+        <div className="tnum">{moneyCents(balance)} across household checking.</div>
         <div style={{ marginTop: 2 }}>
           {nextInflowOn ? (
             <>
@@ -448,42 +574,27 @@ function ShortfallLine({ model }: { model: ReturnType<typeof useCalendar> }) {
             'No further money in is expected inside the projected window.'
           )}
         </div>
+        {model.negativeDays.length > 0 && (
+          <div className="tnum" style={{ marginTop: 6, fontWeight: 700 }}>
+            {model.negativeDays.length} {model.negativeDays.length === 1 ? 'day' : 'days'} in{' '}
+            {model.monthLabel} project below zero:{' '}
+            {model.negativeDays.map((d) => shortDay(d.date)).join(', ')}.
+          </div>
+        )}
       </div>
     )
   }
 
   return (
-    <div className="sm muted" style={{ marginBottom: 12 }}>
-      No day in the next three months projects below zero on what is counted here:
-      scheduled debt payments, and income and outgoings whose cadence is derivable
-      from history. Day-to-day variable spending is not counted, because there is
-      no figure for it that would not be invented.
-    </div>
-  )
-}
-
-function MonthTotals({ model }: { model: ReturnType<typeof useCalendar> }) {
-  return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(3, 1fr)',
-        gap: 10,
-        marginTop: 12,
-      }}
-    >
-      {[
-        { k: 'Payments due', v: model.monthDue },
-        { k: 'Expected in', v: model.monthIn },
-        { k: 'Expected out', v: model.monthOut },
-      ].map(({ k, v }) => (
-        <div key={k}>
-          <div className="caps">{k}</div>
-          <div className="tnum sm" style={{ fontWeight: 700 }}>
-            {money(v)}
-          </div>
-        </div>
-      ))}
+    <div className="box">
+      <div className="caps">Next three months</div>
+      <div className="sm" style={{ marginTop: 4 }}>
+        No day projects below zero on what is counted here.
+      </div>
+      <div className="rule">
+        Counted: scheduled debt payments, and income and outgoings whose cadence is
+        derivable from history. Not counted: day-to-day variable spending.
+      </div>
     </div>
   )
 }
@@ -492,33 +603,83 @@ function MonthTotals({ model }: { model: ReturnType<typeof useCalendar> }) {
  * Days
  * ------------------------------------------------------------------ */
 
+/** One day opened out, beneath the grid. Desktop only — the list is already this. */
 function DayDetail({
   cell,
+  targetId,
   todayIso,
   onClose,
 }: {
   cell: DayCell
+  targetId: string | null
   todayIso: string
   onClose: () => void
 }) {
+  const events = eventsOf(cell, targetId)
+
   return (
-    <div className="card-panel" style={{ marginTop: 12 }}>
+    <div className="box" style={{ marginTop: 14 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
         <div className="sm tnum" style={{ fontWeight: 700 }}>
           {dayHeading(cell.date, parseDateOnly(todayIso))}
         </div>
-        <button type="button" className="pill" style={{ background: 'var(--neutral-bg)', color: 'var(--neutral-tx)' }} onClick={onClose}>
+        <button
+          type="button"
+          className="pill"
+          style={{ background: 'var(--neutral-bg)', color: 'var(--neutral-tx)' }}
+          onClick={onClose}
+        >
           Close
         </button>
       </div>
 
-      {cell.due.length === 0 && cell.expected.length === 0 && (
+      {events.length === 0 ? (
         <div className="sm muted" style={{ marginTop: 6 }}>
           Nothing due and nothing expected.
         </div>
+      ) : (
+        <table className="tbl" style={{ marginTop: 6 }}>
+          <tbody>
+            {events.map((e) => (
+              <tr key={e.key}>
+                <td>
+                  <div
+                    className="sm"
+                    style={{
+                      fontWeight: e.isTarget ? 700 : 400,
+                      color: e.isTarget ? 'var(--amber-tx)' : undefined,
+                    }}
+                  >
+                    {e.label}
+                  </div>
+                  {/* Both, where both apply. Where a due date came FROM is a
+                      provenance claim this app never drops, and the target flag
+                      must not be the thing that quietly swallows it. The
+                      fortnight row has no width for the pair and says only
+                      "current target", as the mockup draws it. */}
+                  <div className="tiny muted">
+                    {[e.isTarget ? 'current target' : null, e.note].filter(Boolean).join(' · ')}
+                  </div>
+                </td>
+                <td className="num">
+                  {e.amount === null ? (
+                    // "Nothing known" must never read as "nothing due".
+                    <span className="tiny muted">amount unknown</span>
+                  ) : (
+                    <span
+                      className={e.direction === 'in' ? 'is-good' : undefined}
+                      style={{ fontWeight: e.direction === 'in' ? 700 : 400 }}
+                    >
+                      {e.direction === 'in' ? '+' : '−'}
+                      {moneyCents(e.amount)}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
-
-      <DayLines cell={cell} />
 
       {cell.projected !== null && (
         <div
@@ -529,261 +690,23 @@ function DayDetail({
             borderTop: '1px solid var(--line)',
             fontWeight: 700,
             color: cell.negative ? 'var(--red-tx)' : 'var(--ink)',
+            display: 'flex',
+            justifyContent: 'space-between',
           }}
         >
-          {moneyCents(cell.projected)}
-          <span className="tiny muted" style={{ fontWeight: 400 }}> projected, end of day</span>
+          <span className="tiny muted" style={{ fontWeight: 400 }}>
+            Projected, end of day
+          </span>
+          <span>{moneyCents(cell.projected)}</span>
         </div>
       )}
     </div>
   )
 }
 
-function DayRow({ cell, todayIso }: { cell: DayCell; todayIso: string }) {
-  return (
-    <div className="row" style={{ alignItems: 'flex-start' }}>
-      <div style={{ width: 62, flex: '0 0 auto' }}>
-        <div className="tiny caps tnum" style={{ color: cell.date === todayIso ? 'var(--ink)' : 'var(--steel)' }}>
-          {shortDay(cell.date)}
-        </div>
-        {cell.projected !== null && (
-          <div
-            className="tiny tnum"
-            style={{ color: cell.negative ? 'var(--red-tx)' : 'var(--steel)', fontWeight: cell.negative ? 700 : 400 }}
-          >
-            {money(cell.projected)}
-          </div>
-        )}
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <DayLines cell={cell} />
-      </div>
-    </div>
-  )
-}
-
-function DayLines({ cell }: { cell: DayCell }) {
-  return (
-    <>
-      {cell.due.map((p, i) => (
-        <DueLine key={`${p.accountId}-${i}`} p={p} />
-      ))}
-      {cell.expected.map((f, i) => (
-        <FlowLine key={`${f.seriesKey}-${i}`} f={f} />
-      ))}
-    </>
-  )
-}
-
-function DueLine({ p }: { p: DuePayment }) {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 3 }}>
-      <div style={{ minWidth: 0 }}>
-        <div className="sm" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {p.label}
-        </div>
-        <div className="tiny muted">
-          {p.source === 'schedule'
-            ? 'payment schedule'
-            : p.source === 'issuer'
-              ? 'due date from the issuer'
-              : 'due day on record'}
-          {p.rolledForward && ' · rolled on a month, the stated cycle is already paid'}
-        </div>
-      </div>
-      <div className="sm tnum" style={{ whiteSpace: 'nowrap', color: 'var(--steel)' }}>
-        {p.amount === null ? (
-          // "Nothing known" must never read as "nothing due".
-          <span className="tiny">amount unknown</span>
-        ) : (
-          signedAmount(-p.amount)
-        )}
-      </div>
-    </div>
-  )
-}
-
-function FlowLine({ f }: { f: ExpectedFlow }) {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginTop: 3 }}>
-      <div style={{ minWidth: 0 }}>
-        <div className="sm" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {f.label}
-        </div>
-        <div className="tiny muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {f.accountLabel}
-          {!f.inBalance && ' · outside the checking total'}
-          {f.overdue && (f.direction === 'in' ? ' · late, not counted' : ' · late, still counted')}
-        </div>
-      </div>
-      <div
-        className="sm tnum"
-        style={{
-          whiteSpace: 'nowrap',
-          color: f.overdue ? 'var(--red-tx)' : f.direction === 'in' ? 'var(--ink)' : 'var(--steel)',
-          opacity: f.inBalance ? 1 : 0.6,
-        }}
-      >
-        {signedAmount(f.direction === 'in' ? f.amount : -f.amount)}
-      </div>
-    </div>
-  )
-}
-
 /* ------------------------------------------------------------------ *
- * Series
+ * Not counted
  * ------------------------------------------------------------------ */
-
-const linkButton = (busy: boolean): React.CSSProperties => ({
-  appearance: 'none',
-  background: 'none',
-  border: 'none',
-  padding: 0,
-  font: 'inherit',
-  textDecoration: 'underline',
-  cursor: busy ? 'default' : 'pointer',
-  opacity: busy ? 0.5 : 1,
-})
-
-/** 1st, 2nd, 3rd, 4th … */
-function ordinalDay(n: number): string {
-  const s2 = ['th', 'st', 'nd', 'rd']
-  const v = n % 100
-  return n + (s2[(v - 20) % 10] ?? s2[v] ?? s2[0])
-}
-
-function SeriesRow({
-  s,
-  onDismiss,
-  onSetDay,
-  busy,
-  accountName,
-}: {
-  s: Series
-  onDismiss: (s: Series) => void
-  onSetDay: (s: Series, day: number) => void
-  busy: boolean
-  accountName: (id: string) => string
-}) {
-  const [editingDay, setEditingDay] = useState(false)
-  const [dayText, setDayText] = useState(String(s.statedDay ?? s.dayOfMonth ?? 1))
-  // A hand-marked series has no observations to report, and saying "0 observed"
-  // next to a confident date would read as a measurement that came back empty.
-  const marked = s.events.length === 0
-
-  return (
-    <div className="row" style={{ alignItems: 'flex-start' }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="sm" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {s.label}
-        </div>
-        <div className="tiny muted tnum">
-          {s.direction === 'in' ? 'in' : 'out'} · {cadenceLabel(s)}
-          {marked ? ' · marked by hand, not yet observed' : ` · ${s.events.length} observed`}
-          {s.missedCycles > 0 && ` · ${s.missedCycles} cycle${s.missedCycles === 1 ? '' : 's'} missed`}
-        </div>
-        {/* This route went quiet, but the same budget line was paid another way
-            since. Said out loud rather than silently folded together, because
-            the two really are separate movements of money. */}
-        {s.paidElsewhere && (
-          <div className="tiny tnum" style={{ color: 'var(--green-tx)' }}>
-            paid {s.paidElsewhere.daysAgo} days ago from{' '}
-            {accountName(s.paidElsewhere.accountId)}
-          </div>
-        )}
-        {/* Dismissing records the last date seen, so a charge taken after it is
-            reported rather than silently suppressed. Said here, once, because
-            "no longer active" otherwise sounds like it means "hide this". */}
-        {/* The observed day is when the money POSTED, which for a bill paid on
-            the 1st is several days later. Only the person paying it knows the
-            due date, so it can be stated — and it is labelled as stated. */}
-        {s.kind === 'monthly' && (
-          <div className="tiny muted" style={{ marginTop: 2 }}>
-            {editingDay ? (
-              <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                due on the
-                <input
-                  inputMode="numeric"
-                  value={dayText}
-                  onChange={(e) => setDayText(e.target.value)}
-                  className="tnum"
-                  aria-label={`Day of the month ${s.label} is due`}
-                  style={{
-                    font: 'inherit',
-                    width: 44,
-                    padding: '2px 5px',
-                    border: '1px solid var(--line)',
-                    borderRadius: 'var(--r-control)',
-                    background: 'var(--white)',
-                    color: 'var(--ink)',
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    const n = Number(dayText)
-                    if (Number.isInteger(n) && n >= 1 && n <= 31) {
-                      onSetDay(s, n)
-                      setEditingDay(false)
-                    }
-                  }}
-                  disabled={busy}
-                  style={linkButton(busy)}
-                >
-                  save
-                </button>
-                <button type="button" onClick={() => setEditingDay(false)} style={linkButton(false)}>
-                  cancel
-                </button>
-              </span>
-            ) : (
-              <button type="button" onClick={() => setEditingDay(true)} style={linkButton(false)}>
-                {s.statedDay
-                  ? `due on the ${ordinalDay(s.statedDay)} (entered)`
-                  : 'set the day it is due'}
-              </button>
-            )}
-          </div>
-        )}
-        <button
-          type="button"
-          className="tiny muted"
-          onClick={() => onDismiss(s)}
-          disabled={busy}
-          style={{
-            appearance: 'none',
-            background: 'none',
-            border: 'none',
-            padding: '2px 0 0',
-            font: 'inherit',
-            textDecoration: 'underline',
-            cursor: busy ? 'default' : 'pointer',
-            opacity: busy ? 0.5 : 1,
-          }}
-          aria-label={`Mark ${s.label} as no longer active`}
-        >
-          {busy ? 'saving…' : 'no longer active'}
-        </button>
-      </div>
-      <div style={{ textAlign: 'right', flex: '0 0 auto' }}>
-        <div className="sm tnum" style={{ color: s.direction === 'in' ? 'var(--ink)' : 'var(--steel)' }}>
-          {signedAmount(s.direction === 'in' ? s.medianAmount : -s.medianAmount)}
-        </div>
-        {/*
-          Days LATE, not days since the last payment. Those differ by a whole
-          cycle: a monthly bill last paid 46 days ago is 16 days late, and
-          printing the larger figure made an overdue rent look like it had been
-          missed twice over.
-        */}
-        <div className="tiny tnum" style={{ color: s.overdue ? 'var(--red-tx)' : 'var(--steel)' }}>
-          {s.overdue
-            ? `${Math.max(1, Math.round(s.daysSinceLast - (s.medianGap ?? 0)))} days late`
-            : `next ${s.nextOn}`}
-        </div>
-      </div>
-    </div>
-  )
-}
 
 /**
  * What the projection deliberately leaves out.
@@ -794,16 +717,18 @@ function SeriesRow({
  * deposit days in 180 with gaps of 1 to 18 — is precisely the one that would look
  * like money if it were projected at its median gap.
  */
-function NotProjected({ model }: { model: ReturnType<typeof useCalendar> }) {
+function NotProjected({ model, wide }: { model: ReturnType<typeof useCalendar>; wide: boolean }) {
   const { irregularSeries, suppressedSeries, unknownDue } = model
   if (irregularSeries.length === 0 && suppressedSeries.length === 0 && unknownDue.length === 0) return null
+
+  const shown = irregularSeries.slice(0, 8)
 
   return (
     <>
       <div className="sect">Not counted in the projection</div>
 
       {unknownDue.length > 0 && (
-        <div style={{ marginBottom: 10 }}>
+        <div style={{ marginBottom: 12 }}>
           <div className="caps" style={{ marginBottom: 4 }}>
             Due date not known
           </div>
@@ -817,7 +742,7 @@ function NotProjected({ model }: { model: ReturnType<typeof useCalendar> }) {
       )}
 
       {suppressedSeries.length > 0 && (
-        <div style={{ marginBottom: 10 }}>
+        <div style={{ marginBottom: 12 }}>
           <div className="caps" style={{ marginBottom: 4 }}>
             Already counted as a payment due
           </div>
@@ -840,20 +765,58 @@ function NotProjected({ model }: { model: ReturnType<typeof useCalendar> }) {
           </div>
           <div className="tiny muted" style={{ marginBottom: 6 }}>
             Seen often enough to name, not evenly enough to date. Showing the{' '}
-            <span className="tnum">{Math.min(8, irregularSeries.length)}</span> largest of{' '}
+            <span className="tnum">{shown.length}</span> largest of{' '}
             <span className="tnum">{irregularSeries.length}</span>.
           </div>
-          {irregularSeries.slice(0, 8).map((s) => (
-            <div key={s.key} className="sm" style={{ marginTop: 2 }}>
-              <span style={{ display: 'inline-block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}>
-                {s.label}
-              </span>
-              <div className="tiny muted tnum">
-                {s.direction === 'in' ? 'in' : 'out'} · {s.events.length} in 180 days ·{' '}
-                {moneyCents(s.medianAmount)} typical · {s.note}
-              </div>
+
+          {wide ? (
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th scope="col">Series</th>
+                  <th scope="col">Why it has no date</th>
+                  <th scope="col" className="num">
+                    Typical
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((s) => (
+                  <tr key={s.key}>
+                    <td>
+                      {s.label}
+                      <div className="tiny muted tnum">
+                        {s.direction === 'in' ? 'in' : 'out'} · {s.events.length} in 180 days
+                      </div>
+                    </td>
+                    <td className="muted">{s.note}</td>
+                    <td className="num">{moneyCents(s.medianAmount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div>
+              {shown.map((s) => (
+                <div key={s.key} className="row" style={{ alignItems: 'flex-start' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      className="sm"
+                      style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    >
+                      {s.label}
+                    </div>
+                    <div className="tiny muted tnum">
+                      {s.direction === 'in' ? 'in' : 'out'} · {s.events.length} in 180 days · {s.note}
+                    </div>
+                  </div>
+                  <div className="sm tnum" style={{ flex: '0 0 auto', textAlign: 'right' }}>
+                    {moneyCents(s.medianAmount)}
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       )}
     </>
