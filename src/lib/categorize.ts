@@ -145,9 +145,16 @@ export interface RuleLike {
  * charge, so a $230 shop showed as -$13 of groceries. A refund still reaches
  * rules: Plaid files it under the purchase's own category, not TRANSFER_IN, so
  * it keeps cancelling the charge it reverses.
+ *
+ * The same holds for money arriving that Plaid files as INCOME. A rule written
+ * for a purchase from a company someone also works for caught the paycheck
+ * from it, and a month of salary read as negative discretionary spending, so
+ * the optional bucket went below zero.
  */
 export function ruleApplies(amount: number, plaidCategory: string | null | undefined): boolean {
-  return !(amount < 0 && primaryOf(plaidCategory) === 'TRANSFER_IN')
+  if (amount >= 0) return true
+  const primary = primaryOf(plaidCategory)
+  return primary !== 'TRANSFER_IN' && primary !== 'INCOME'
 }
 
 export function matchRule(
