@@ -97,16 +97,33 @@ async function notify(alertType: string, title: string, body: string) {
   })
 }
 
+/**
+ * CORS, on every response. "Sync now" in Settings calls this from the browser,
+ * and the Authorization + apikey headers make that a preflighted request. With
+ * no OPTIONS answer the preflight drew the 405 below, the browser never sent the
+ * POST, and the button only ever said "Could not reach the server". Same set as
+ * plaid-link. pg_cron is not a browser and ignores all of it.
+ */
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers':
+    'authorization, content-type, apikey, x-client-info, x-supabase-api-version',
+  'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+}
+
 Deno.serve(async (req: Request) => {
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { headers: CORS })
+  }
   if (req.method !== 'POST' && req.method !== 'GET') {
-    return new Response('Method not allowed', { status: 405 })
+    return new Response('Method not allowed', { status: 405, headers: CORS })
   }
 
   const auth = await authorize(req)
   if (!auth.ok) {
     return new Response(JSON.stringify({ error: 'unauthorized' }), {
       status: 401,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...CORS },
     })
   }
 
@@ -165,7 +182,7 @@ Deno.serve(async (req: Request) => {
   if (readErr) {
     return new Response(
       JSON.stringify({ error: `aborted before touching Plaid: ${readErr.message}` }, null, 2),
-      { status: 500, headers: { 'Content-Type': 'application/json' } },
+      { status: 500, headers: { 'Content-Type': 'application/json', ...CORS } },
     )
   }
 
@@ -620,6 +637,6 @@ Deno.serve(async (req: Request) => {
   }
 
   return new Response(JSON.stringify(report, null, 2), {
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...CORS },
   })
 })
