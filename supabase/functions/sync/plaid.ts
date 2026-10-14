@@ -140,6 +140,21 @@ export function balanceGet(accessToken: string) {
   })
 }
 
+/** Point an existing item's webhooks at `url`. Free; no re-link needed. */
+export function itemWebhookUpdate(accessToken: string, url: string) {
+  return call<{ item: { webhook: string | null } }>('/item/webhook/update', {
+    access_token: accessToken,
+    webhook: url,
+  })
+}
+
+/** The public key a webhook's Plaid-Verification JWT was signed with. */
+export function webhookVerificationKeyGet(keyId: string) {
+  return call<{
+    key: { kid: string; alg: string; crv: string; kty: string; use: string; x: string; y: string; expired_at: number | null }
+  }>('/webhook_verification_key/get', { key_id: keyId })
+}
+
 export function liabilitiesGet(accessToken: string) {
   return call<{
     accounts: PlaidAccount[]

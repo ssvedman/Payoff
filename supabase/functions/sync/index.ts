@@ -14,6 +14,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import {
   balanceGet,
+  itemWebhookUpdate,
   liabilitiesGet,
   transactionsSyncAll,
   purchaseApr,
@@ -27,6 +28,9 @@ import { categorize, matchRule as matchedRule, ruleApplies, type Bucket, type Ru
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 const CRON_SECRET = Deno.env.get('CRON_SECRET') ?? ''
+
+/** Where Plaid sends this project's webhooks. See plaid-webhook. */
+const WEBHOOK_URL = `${SUPABASE_URL}/functions/v1/plaid-webhook`
 
 const admin = createClient(SUPABASE_URL, SERVICE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
@@ -127,9 +131,38 @@ Deno.serve(async (req: Request) => {
     })
   }
 
+  /**
+   * What kind of run this is.
+   *
+   * The nightly run and Sync now are "full": real-time balances
+   * (/accounts/balance/get, billed per call), liabilities, transactions. A
+   * daytime run started by a Plaid webhook or by opening the app is "light":
+   * the transaction delta alone, which the Transactions subscription covers
+   * however often it is called. A webhook also names its item, so only that one
+   * is walked. Anything unrecognised is a full run, as before.
+   *
+   * Light runs leave balances alone on purpose. Plaid's free cached balance
+   * (/accounts/get) can be OLDER than the real-time one the nightly run stored
+   * for today, and writing it over that row moved cleared_at back and forth —
+   * reopening a card just paid off, re-pointing the target, and so misfiling the
+   * day's payments permanently. The target for a light run is derived from the
+   * balances already held, exactly as the nightly run left them.
+   */
+  let opts: { mode?: unknown; item_id?: unknown } = {}
+  if (req.method === 'POST') {
+    try {
+      opts = (await req.json()) ?? {}
+    } catch {
+      // No body, as pg_cron may send. A full run.
+    }
+  }
+  const light = opts.mode === 'light'
+  const onlyItem = typeof opts.item_id === 'string' ? opts.item_id : null
+
   const asOf = today()
   const report = {
     asOf,
+    mode: light ? 'light' : 'full',
     items: [] as unknown[],
     snapshots: 0,
     transactionsUpserted: 0,
@@ -156,7 +189,9 @@ Deno.serve(async (req: Request) => {
    */
   const readAll = () =>
     Promise.all([
-      admin.from('plaid_items').select('*'),
+      // Ordered, so concurrent runs take item leases in the same order and one
+      // waits on the other instead of each holding what the other wants.
+      admin.from('plaid_items').select('*').order('item_id'),
       admin.from('accounts').select('*'),
       admin.from('merchant_rules').select('match_text, bucket, budget_line_id'),
       admin.from('budget_line_rules').select('plaid_prefix, budget_line_id'),
@@ -186,7 +221,7 @@ Deno.serve(async (req: Request) => {
     )
   }
 
-  const itemRows = itemsRes.data
+  const itemRows = (itemsRes.data ?? []).filter((i) => !onlyItem || i.item_id === onlyItem)
   const accountRows = accountsRes.data
   const ruleRows = rulesRes.data
   const lineRuleRows = lineRulesRes.data
@@ -318,6 +353,52 @@ Deno.serve(async (req: Request) => {
 
   const reportByItem = new Map<string, Record<string, unknown>>()
 
+  /**
+   * One run per item at a time.
+   *
+   * Webhooks, app opens on two phones, Sync now and the nightly run can now
+   * overlap. Two runs that start from the same cursor can each store half of a
+   * pending-to-posted swap and the later cursor write then skips the removal, so
+   * a retracted pending row stays in the ledger for good. A lease on the item
+   * serialises them: an app-open run simply yields to whoever holds it, the
+   * others wait for it. The lease expires on its own after LEASE_MINUTES, so a run the
+   * platform killed mid-way cannot lock an item out.
+   *
+   * The cursor is re-read when the lease is taken. The one read at the top may
+   * be a run older than that by now.
+   */
+  const LEASE_MINUTES = 10
+  const leased: string[] = []
+
+  async function takeLease(item: Record<string, unknown>): Promise<boolean> {
+    const itemId = item.item_id as string
+    // An app-open run yields at once: whoever holds the item is already pulling
+    // it. A webhook's run waits like a full one, because Plaid will not send that
+    // notice again and the holder may have finished this item before it came.
+    const attempts = light && !onlyItem ? 1 : 12
+    for (let i = 0; i < attempts; i++) {
+      const expired = new Date(Date.now() - LEASE_MINUTES * 60_000).toISOString()
+      const { data, error } = await admin
+        .from('plaid_items')
+        .update({ sync_started_at: new Date().toISOString() })
+        .eq('item_id', itemId)
+        .or(`sync_started_at.is.null,sync_started_at.lt."${expired}"`)
+        .select('item_id, cursor')
+      if (error) {
+        report.errors.push(`${item.institution}: lease failed: ${error.message}`)
+        return false
+      }
+      if (data && data.length) {
+        item.cursor = data[0].cursor
+        leased.push(itemId)
+        return true
+      }
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, 5000))
+    }
+    if (!light) report.errors.push(`${item.institution}: skipped, another sync held it for a minute`)
+    return false
+  }
+
   // ================= PASS 1: balances, liabilities, cleared_at =================
   for (const item of itemRows ?? []) {
     const itemId = item.item_id as string
@@ -325,11 +406,37 @@ Deno.serve(async (req: Request) => {
     reportByItem.set(itemId, itemReport)
     report.items.push(itemReport)
 
+    if (!(await takeLease(item))) {
+      itemReport.status = 'skipped: another sync is running on this item'
+      continue
+    }
+
     try {
       const { data: token, error: tokenErr } = await admin.rpc('plaid_token_get', {
         p_item_id: itemId,
       })
       if (tokenErr || !token) throw new Error(`no access token in vault for ${itemId}`)
+
+      // ---------- webhook ----------
+      // Items linked before webhooks existed have none, and a re-link is never
+      // needed to add one. Recorded once accepted, so this is one call per item,
+      // ever. A failure costs only the daytime updates, never the run.
+      if (item.webhook_url !== WEBHOOK_URL) {
+        try {
+          await itemWebhookUpdate(token as string, WEBHOOK_URL)
+          const { error } = await admin.from('plaid_items').update({ webhook_url: WEBHOOK_URL }).eq('item_id', itemId)
+          if (error) throw new Error(`registered with Plaid but not recorded: ${error.message}`)
+          itemReport.webhook = 'registered'
+        } catch (err) {
+          report.errors.push(`${item.institution}: webhook not registered: ${(err as Error).message}`)
+        }
+      }
+
+      if (light) {
+        itemReport.balances = 'skipped: light run'
+        itemReport.balancesDone = true
+        continue
+      }
 
       // ---------- balances ----------
       const { accounts: plaidAccounts } = await balanceGet(token as string)
@@ -618,6 +725,12 @@ Deno.serve(async (req: Request) => {
     } catch (err) {
       await handleItemError(item, itemReport, err)
     }
+  }
+
+  if (leased.length) {
+    const { error } = await admin.from('plaid_items').update({ sync_started_at: null }).in('item_id', leased)
+    // Not fatal: the lease expires on its own. Said, so a ten-minute gap has a cause.
+    if (error) report.errors.push(`lease release failed: ${error.message}`)
   }
 
   // check-alerts runs after sync. pg_net is fire-and-forget so two offset cron

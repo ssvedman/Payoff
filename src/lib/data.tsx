@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { supabase } from './supabase'
+import { syncNow } from './plaidLink'
 import { useAuth } from './auth'
 import { isoDate } from './format'
 import {
@@ -211,6 +212,25 @@ export function monthEnd(d = new Date()): string {
   return isoDate(new Date(d.getFullYear(), d.getMonth() + 1, 0))
 }
 
+/** When this device last started an automatic sync. See DataProvider. */
+const AUTO_SYNC_KEY = 'payoff-last-auto-sync'
+
+function readLastAutoSync(): number {
+  try {
+    return Number(localStorage.getItem(AUTO_SYNC_KEY)) || 0
+  } catch {
+    return 0
+  }
+}
+
+function writeLastAutoSync(at: number) {
+  try {
+    localStorage.setItem(AUTO_SYNC_KEY, String(at))
+  } catch {
+    // Storage refused (private window). The hour check on last_synced still holds.
+  }
+}
+
 export function DataProvider({ children }: { children: ReactNode }) {
   const { isMember, user } = useAuth()
 
@@ -256,7 +276,14 @@ export function DataProvider({ children }: { children: ReactNode }) {
     lastSyncedAt: null,
   })
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: {
+    /**
+     * Refetch without showing the loading state. For the background refresh
+     * after an automatic sync, which must not swap a page someone is reading
+     * for skeletons.
+     */
+    silent?: boolean
+  }) => {
     if (!isMember) {
       setState((s) => ({ ...s, loading: false }))
       return
@@ -266,7 +293,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     /** Only the most recent load may write. */
     const isCurrent = () => seq === loadSeq.current
 
-    setState((s) => ({ ...s, loading: true, error: null }))
+    if (opts?.silent !== true) setState((s) => ({ ...s, loading: true, error: null }))
 
     const [
       accountsRes,
@@ -324,6 +351,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
     if (firstError) {
       if (!isCurrent()) return
+      // A background refresh that fails keeps what is already on screen, which
+      // was fine a moment ago, rather than replacing the page with an error.
+      if (opts?.silent === true) return
       setState((s) => ({ ...s, loading: false, error: firstError.message }))
       return
     }
@@ -451,6 +481,42 @@ export function DataProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void load()
   }, [load])
+
+  /**
+   * Opening the app on data more than an hour old pulls fresh data behind the
+   * scenes. Light: the balances Plaid already holds and new transactions, both
+   * free, so it is safe to do whenever someone looks. Also on returning to a tab
+   * or a home-screen app left open, which never "opens" again.
+   *
+   * Plaid's webhook normally keeps last_synced recent on its own, so this mostly
+   * covers the hours Plaid has not checked the bank yet. Once an hour per
+   * device at most, however often the page is focused, reloaded or opened in
+   * another tab: the time of the last attempt is kept in localStorage.
+   */
+  const lastSyncedRef = useRef<string | null>(null)
+  lastSyncedRef.current = state.lastSyncedAt
+  const loadedOk = !state.loading && !state.error
+
+  useEffect(() => {
+    if (!isMember || !loadedOk) return
+    const HOUR = 60 * 60 * 1000
+
+    const maybeSync = () => {
+      if (document.visibilityState !== 'visible') return
+      const now = Date.now()
+      if (now - readLastAutoSync() < HOUR) return
+      const last = lastSyncedRef.current ? Date.parse(lastSyncedRef.current) : 0
+      if (now - last < HOUR) return
+      writeLastAutoSync(now)
+      void syncNow('light').then((r) => {
+        if (r.ok) void load({ silent: true })
+      })
+    }
+
+    maybeSync()
+    document.addEventListener('visibilitychange', maybeSync)
+    return () => document.removeEventListener('visibilitychange', maybeSync)
+  }, [isMember, loadedOk, load])
 
   const value = useMemo<DataState>(() => ({ ...state, refresh: load }), [state, load])
 

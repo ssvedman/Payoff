@@ -165,7 +165,14 @@ export const createCheckingAccount = (
  * somebody starts wondering whether it is broken. The `sync` function already
  * accepts a household member's own token; it simply had no caller from the app.
  */
-export async function syncNow(): Promise<{ ok: boolean; message: string }> {
+export async function syncNow(
+  /**
+   * 'full' asks every bank for its balance in real time, which Plaid bills per
+   * call. 'light' takes the balances Plaid already holds and the new
+   * transactions, both free. The app's own background refresh is always light.
+   */
+  mode: 'full' | 'light' = 'full',
+): Promise<{ ok: boolean; message: string }> {
   const { data } = await supabase.auth.getSession()
   const token = data.session?.access_token
   if (!token) return { ok: false, message: 'Not signed in.' }
@@ -178,7 +185,7 @@ export async function syncNow(): Promise<{ ok: boolean; message: string }> {
         apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ triggeredBy: 'manual' }),
+      body: JSON.stringify({ triggeredBy: mode === 'light' ? 'open' : 'manual', mode }),
     })
     const body = await res.json().catch(() => ({}))
     if (!res.ok) return { ok: false, message: body.error ?? `Update failed (${res.status})` }

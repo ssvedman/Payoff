@@ -172,6 +172,9 @@ Deno.serve(async (req: Request) => {
           // permanently (sync deletes only on Plaid's explicit removed[]), so the
           // record only ever grows from here.
           transactions: { days_requested: 730 },
+          // New transactions are pushed to plaid-webhook as Plaid finds them,
+          // rather than waiting for the nightly run.
+          webhook: `${SUPABASE_URL}/functions/v1/plaid-webhook`,
         }
         if (useHosted) payload.hosted_link = {}
 
