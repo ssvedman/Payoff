@@ -802,7 +802,7 @@ export default function Accounts() {
                   onClick={() => setTab(t)}
                   style={
                     tab === t
-                      ? { background: 'var(--ink)', color: '#fff', textTransform: 'capitalize' }
+                      ? { background: 'var(--fill)', color: 'var(--on-fill)', textTransform: 'capitalize' }
                       : {
                           background: 'var(--white)',
                           color: 'var(--steel)',

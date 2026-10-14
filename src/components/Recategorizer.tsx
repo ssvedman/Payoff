@@ -137,9 +137,9 @@ export default function Recategorizer({
         fontSize: 12,
         lineHeight: 1.3,
         borderRadius: 'var(--r-control)',
-        border: `1px solid ${scope === v ? 'var(--ink)' : 'var(--line)'}`,
-        background: scope === v ? 'var(--ink)' : '#fff',
-        color: scope === v ? '#fff' : 'var(--steel)',
+        border: `1px solid ${scope === v ? 'var(--fill)' : 'var(--line)'}`,
+        background: scope === v ? 'var(--fill)' : 'var(--white)',
+        color: scope === v ? 'var(--on-fill)' : 'var(--steel)',
         fontFamily: 'inherit',
         cursor: 'pointer',
       }}

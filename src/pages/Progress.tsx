@@ -355,7 +355,7 @@ export default function Progress() {
         </div>
         <div className="sm hero__note" style={{ marginTop: 5 }}>
           in interest, and{' '}
-          <b className="tnum" style={{ color: '#fff' }}>
+          <b className="tnum" style={{ color: 'var(--on-fill)' }}>
             {frozen.monthsSaved} months
           </b>{' '}
           of your life

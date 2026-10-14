@@ -8,6 +8,7 @@
  *   1. Manual override on that transaction — never recomputed
  *   2. Funding leg — a bank row that only funds a purchase another connected
  *      feed already records at merchant level
+ *   2b. Crew pay — a household account paying a crew_payees person nets the draw
  *   3. Merchant rule — match_text found in lowercased name or merchant_name
  *   4. Account-based — a payment to the target account is attack, a minimum to any
  *      other debt is fixed, a transfer to savings is savings, a draw from a
@@ -223,6 +224,9 @@ export function namesBusinessAccount(
   return false
 }
 
+/** How money reaches a person rather than a merchant. */
+const CREW_CHANNEL = /\b(zelle|venmo|cash ?app)\b/
+
 const PAYMENT_WORDS = /\b(payment|pmt|pymt|pymnt|autopay|auto pay|bill pay|billpay|epay|ach|xfer|transfer)\b/
 
 function looksLikePayment(haystack: string, plaidCategory: string | null): boolean {
@@ -274,6 +278,11 @@ export interface CategorizeArgs {
   debtNames: string[]
   savingsNames: string[]
   rules: RuleLike[]
+  /**
+   * Lowercased names of the people the business pays (crew_payees). Only
+   * consulted for money leaving a HOUSEHOLD spending account.
+   */
+  crewNames?: string[]
   existingBucketSource?: string | null
   existingBucket?: Bucket | null
 }
@@ -295,6 +304,34 @@ export function categorize(a: CategorizeArgs): { bucket: Bucket; source: 'auto' 
   // Only a manual override on this exact row outranks this.
   if (a.amount > 0 && fundingLegFor(haystack, a.heldInstitutions ?? [])) {
     return { bucket: 'transfer', source: 'auto' }
+  }
+
+  // 2b. Crew pay sent from a household account.
+  //
+  // When the business moves money into a household account and the crew is then
+  // paid from there, step 4 rightly reads the inflow as a draw — but the money
+  // only passed through. Filing the crew payment as income as well (a positive
+  // amount in a bucket stored negative) nets the two back down to the draw that
+  // actually stayed. On the business's own account crew pay is a business cost,
+  // and business rows never reach household maths, so this is household-only.
+  //
+  // Ahead of merchant rules so a rule written for someone's name elsewhere can
+  // never turn crew pay into spending. A person-to-person channel must appear
+  // too: a crew member's first name is far too weak on its own — "pablo" is
+  // also half the restaurants in Kissimmee.
+  if (
+    a.amount > 0 &&
+    !a.accountIsBusiness &&
+    a.accountKind !== 'card' &&
+    a.accountKind !== 'loan' &&
+    a.accountKind !== 'tax' &&
+    CREW_CHANNEL.test(haystack) &&
+    (a.crewNames ?? []).some((n) => {
+      const k = n.trim().toLowerCase()
+      return k.length >= 3 && haystack.includes(k)
+    })
+  ) {
+    return { bucket: 'income', source: 'auto' }
   }
 
   // 3. Merchant rule.
@@ -341,6 +378,11 @@ export function categorize(a: CategorizeArgs): { bucket: Bucket; source: 'auto' 
       // 'attack' would both inflate the attack total past its target (silencing the
       // attack_missing alert, the one alert whose job is to catch a missed payment)
       // and leave the fixed line permanently unfillable.
+      //
+      // The target's own minimum rides inside this row whenever it is paid in the
+      // same payment. The month totals take it back out (minimumsInsideAttack in
+      // src/lib/data.tsx; check-alerts does the same), so the attack figure is the
+      // surplus alone and the minimum is counted once, under fixed.
       if (a.targetNames.some((n) => namesAccount(haystack, n))) {
         return { bucket: 'attack', source: 'auto' }
       }

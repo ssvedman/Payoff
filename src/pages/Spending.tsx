@@ -3,7 +3,13 @@ import Bar from '../components/Bar'
 import SpendingBucketRows from '../components/SpendingBucketRows'
 import SpendingSixMonths from '../components/SpendingSixMonths'
 import { useMonthView } from '../lib/monthView'
-import { isBusinessTxn, useData, useMonthTotalsFor, type Transaction } from '../lib/data'
+import {
+  isBusinessTxn,
+  minimumsInsideAttack,
+  useData,
+  useMonthTotalsFor,
+  type Transaction,
+} from '../lib/data'
 import { money, MONTH_NAMES, accountDescriptor } from '../lib/format'
 import {
   OWNER_CAVEAT,
@@ -112,7 +118,7 @@ export default function Spending() {
   const { transactions, allTransactions, refresh } = view
   const loading = view.loading
   const error = dataError ?? view.error
-  const totals = useMonthTotalsFor(transactions, budgetLines)
+  const totals = useMonthTotalsFor(transactions, budgetLines, accounts)
   const wide = useWideScreen()
 
   /**
@@ -204,6 +210,16 @@ export default function Spending() {
     [rowsInView],
   )
 
+  /**
+   * The minimum hidden inside the attack rows on screen — moved to fixed, the
+   * same correction useMonthTotalsFor makes to the household figures, so a
+   * person's bars and the household's are netted alike.
+   */
+  const minimumShown = useMemo(
+    () => minimumsInsideAttack(rowsInView.get('attack') ?? [], accounts),
+    [rowsInView, accounts],
+  )
+
   /** The month's discretionary rows, which are the only ones split by person. */
   const optionalRows = useMemo(() => rowsIn.get('optional') ?? [], [rowsIn])
 
@@ -279,10 +295,10 @@ export default function Spending() {
    * recomputed per person when a chip is held down.
    */
   const optionalShown = shownIn('optional')
-  const fixedShown = shownIn('fixed')
+  const fixedShown = shownIn('fixed') + minimumShown
   const attackSpent = totals.bucketSpent('attack')
   const savingsSpent = totals.bucketSpent('savings')
-  const attackShown = shownIn('attack')
+  const attackShown = shownIn('attack') - minimumShown
   const savingsShown = shownIn('savings')
 
   const spentTotal = fixedSpent + optionalSpent + attackSpent + savingsSpent
@@ -802,6 +818,12 @@ export default function Spending() {
                 {day > ATTACK_DUE_DAY ? `, due by day ${ATTACK_DUE_DAY}` : ''}
               </div>
             )}
+            {totals.minimumInAttack > 0 && !filtered && (
+              <div className="tnum tiny muted" style={{ marginTop: 4 }}>
+                {money(totals.minimumInAttack)} of the payments below was the minimum, counted under
+                fixed
+              </div>
+            )}
             {openBucket === 'attack' && (
               <SpendingBucketRows
                 rows={rowsInView.get('attack') ?? []}
@@ -1148,7 +1170,7 @@ function OwnerChip({
       onClick={onClick}
       style={
         on
-          ? { background: 'var(--ink)', color: '#fff' }
+          ? { background: 'var(--fill)', color: 'var(--on-fill)' }
           : { background: 'var(--white)', color: 'var(--steel)', border: '1px solid var(--line)' }
       }
     >

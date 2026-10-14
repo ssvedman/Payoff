@@ -269,7 +269,7 @@ Deno.serve(async (req: Request) => {
       .map((n) => String(n).trim().toLowerCase())
       .filter((n) => n.length >= 4)
 
-    const reached = (txns ?? [])
+    const paidToTarget = (txns ?? [])
       .filter((t) => {
         if (t.bucket !== 'attack') return false
         const hay = `${t.name ?? ''} ${t.merchant_name ?? ''}`.toLowerCase()
@@ -277,11 +277,18 @@ Deno.serve(async (req: Request) => {
       })
       .reduce((s, t) => s + Number(t.amount), 0)
 
+    // The target's minimum rides inside those payments, but attack_fund is the
+    // surplus ABOVE the minimums. Counting it let the minimum alone hold this
+    // alert silent all month. Same correction as minimumsInsideAttack in
+    // src/lib/data.tsx.
+    const targetMinimum = Math.max(0, Number(target.minimum_payment ?? 0))
+    const reached = Math.max(0, Math.round((paidToTarget - targetMinimum) * 100) / 100)
+
     if (reached < attackFund) {
       alerts.push({
         type: 'attack_missing',
         title: 'Attack payment not seen',
-        body: `${money(reached)} of the ${money(attackFund)} attack fund has reached ${target.name} this month.`,
+        body: `${money(reached)} of the ${money(attackFund)} attack fund has reached ${target.name} this month, beyond its minimum.`,
         dedupe: `attack_missing:${now.year}-${now.month}`,
       })
     }

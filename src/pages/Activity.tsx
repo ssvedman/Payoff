@@ -60,7 +60,7 @@ function Chip({
       onClick={onClick}
       style={
         on
-          ? { background: 'var(--ink)', color: '#fff' }
+          ? { background: 'var(--fill)', color: 'var(--on-fill)' }
           : { background: 'var(--white)', color: 'var(--steel)', border: '1px solid var(--line)' }
       }
     >

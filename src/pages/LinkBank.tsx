@@ -605,7 +605,7 @@ export default function LinkBank() {
                     borderRadius: 'var(--r-control)',
                     fontFamily: 'inherit',
                     fontSize: 14,
-                    background: '#fff',
+                    background: 'var(--white)',
                     color: 'var(--ink)',
                   }}
                 >

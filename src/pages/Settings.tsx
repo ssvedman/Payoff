@@ -5,6 +5,7 @@ import { MONTH_NAMES, money, moneyCents, parseDateOnly, relativeTime } from '../
 import { linkStatus, syncNow } from '../lib/plaidLink'
 import { useFrozenPlan } from '../lib/planVersion'
 import { supabase } from '../lib/supabase'
+import { useTheme, type ThemeChoice } from '../lib/theme'
 import type { AlertType } from '../lib/database.types'
 
 /**
@@ -210,6 +211,7 @@ export default function Settings() {
   const { user, signOut } = useAuth()
   const { loading, error, plan, prefs, memberNames, lastSyncedAt, refresh } = useData()
   const desktop = useIsDesktop()
+  const [theme, setTheme] = useTheme()
 
   // The plan figures come from the VERSION, never from plan_settings: the
   // version row is what the projections were actually generated from, and
@@ -806,6 +808,32 @@ export default function Settings() {
                 )
               })
             )}
+          </Section>
+
+          {/* ---------------- Appearance ---------------- */}
+          <Section title="Appearance" desktop={desktop}>
+            <div className="row" style={{ padding: '7px 0', alignItems: 'center' }}>
+              <div style={{ flex: 1 }}>
+                <div className="sm" style={{ fontWeight: 600 }}>
+                  Theme
+                </div>
+                {desktop && <div className="tiny muted">This device only</div>}
+              </div>
+              <div className="seg" role="radiogroup" aria-label="Theme">
+                {(['system', 'light', 'dark'] as ThemeChoice[]).map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    role="radio"
+                    aria-checked={theme === c}
+                    className={theme === c ? 'seg__btn on' : 'seg__btn'}
+                    onClick={() => setTheme(c)}
+                  >
+                    {c === 'system' ? 'Auto' : c === 'light' ? 'Light' : 'Dark'}
+                  </button>
+                ))}
+              </div>
+            </div>
           </Section>
 
           {/* ---------------- Data ---------------- */}

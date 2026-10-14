@@ -230,6 +230,8 @@ export default function ProgressChart({
       /** Debt by month index, for the milestone dots and the tooltip. */
       planAt: new Map(plan.map((r) => [r.month_index, r.projected_debt])),
       minimumsAt: new Map(minimums.map((r) => [r.month_index, r.projected_debt])),
+      /** Measured total by month index, for the tooltip. */
+      actualAt: new Map(actual.map((a) => [a.monthIndex, a.total])),
     }
   }, [plan, originalPlan, minimums, actual, innerW, innerH, PAD.left, PAD.top])
 
@@ -259,12 +261,20 @@ export default function ProgressChart({
   /** Debt after `m` months. Past the end of a run the debt is gone, not missing. */
   const at = (rows: Map<number, number>, m: number) => rows.get(m) ?? (m > 0 ? 0 : maxV)
 
+  /** "$412 ahead of plan" — less owed than planned is ahead. */
+  function versusPlan(diff: number): string {
+    if (Math.abs(diff) < 0.5) return 'on plan'
+    return diff < 0 ? `${format(-diff)} ahead of plan` : `${format(diff)} behind plan`
+  }
+
   function onMove(e: React.PointerEvent) {
     if (!wrap) return
     const rect = wrap.getBoundingClientRect()
     const vx = ((e.clientX - rect.left) / rect.width) * W
     const m = Math.round(domainMin + ((vx - PAD.left) / innerW) * (domainMax - domainMin))
-    setHover(Math.max(0, Math.min(domainMax, m)))
+    // Down to domainMin, not 0: a reading taken before the plan began sits at a
+    // negative month, and clamping at 0 made it impossible to hover.
+    setHover(Math.max(domainMin, Math.min(domainMax, m)))
   }
 
   return (
@@ -286,6 +296,8 @@ export default function ProgressChart({
           }
           style={{ display: 'block', touchAction: 'pan-y' }}
           onPointerMove={onMove}
+          // A tap on a phone is a pointerdown with no move after it.
+          onPointerDown={onMove}
           onPointerLeave={() => setHover(null)}
         >
           {/* Gridlines and the y axis, drawn first so every series sits over
@@ -409,7 +421,7 @@ export default function ProgressChart({
               key={a.monthIndex}
               cx={x(a.monthIndex)}
               cy={y(a.total)}
-              r="4.5"
+              r={hover === a.monthIndex ? 6 : 4.5}
               fill={ACTUAL_COLOR}
               stroke="var(--white)"
               strokeWidth="1.4"
@@ -475,8 +487,8 @@ export default function ProgressChart({
               top: 0,
               left: `${Math.min(Math.max((x(hover) / W) * 100, 16), 84)}%`,
               transform: 'translateX(-50%)',
-              background: 'var(--ink)',
-              color: '#fff',
+              background: 'var(--fill)',
+              color: 'var(--on-fill)',
               padding: '5px 9px',
               borderRadius: 'var(--r-control)',
               whiteSpace: 'nowrap',
@@ -485,12 +497,29 @@ export default function ProgressChart({
             }}
           >
             <div className="tnum" style={{ opacity: 0.7 }}>
-              month {hover}
+              {hover < 0 ? `${-hover} mo before plan` : `month ${hover}`}
             </div>
-            <div className="tnum">plan {format(at(geom.planAt, hover))}</div>
-            <div className="tnum" style={{ opacity: 0.8 }}>
-              minimums {format(at(geom.minimumsAt, hover))}
-            </div>
+            {/* The measured figure first and heaviest: it is the line the page
+                exists to show. Its gap to the plan is the reading that matters,
+                so it is stated rather than left to subtraction. */}
+            {geom.actualAt.has(hover) && (
+              <div className="tnum" style={{ fontWeight: 700 }}>
+                actual {format(geom.actualAt.get(hover)!)}
+              </div>
+            )}
+            {geom.actualAt.has(hover) && hover >= 0 && geom.planAt.has(hover) && (
+              <div className="tnum">{versusPlan(geom.actualAt.get(hover)! - geom.planAt.get(hover)!)}</div>
+            )}
+            {hover >= 0 && (
+              <div className="tnum" style={geom.actualAt.has(hover) ? { opacity: 0.8 } : undefined}>
+                plan {format(at(geom.planAt, hover))}
+              </div>
+            )}
+            {hover >= 0 && (
+              <div className="tnum" style={{ opacity: 0.8 }}>
+                minimums {format(at(geom.minimumsAt, hover))}
+              </div>
+            )}
           </div>
         )}
       </div>

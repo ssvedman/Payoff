@@ -25,10 +25,84 @@
   --neutral-bg: #E7EBF0;
   --neutral-tx: #2E3A49;
 
+  /* Filled surfaces — primary buttons, the hero, selected chips, tooltips.
+     The same as ink in light mode; a raised slate in dark, where ink is the
+     light text colour and a filled block of it would glare. */
+  --fill: #161E27;
+  --on-fill: #FFFFFF;
+
+  color-scheme: light;
+
   --r-control: 5px;
   --r-card: 7px;
 
   --nav-h: 58px;
+}
+
+/* ---------- Dark mode ----------
+   Follows the device unless Settings pins a theme: data-theme on <html> is set
+   before first paint by the inline script in index.html. Only tokens change, so
+   every component inherits it; anything that hard-codes a colour will not. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+  --bg: #10151B;
+  --card: #18202A;
+  --white: #1F2833;
+
+  --ink: #E6EAEF;
+  --steel: #97A3B4;
+  --line: #313C49;
+
+  --amber: #F0A92A;
+  --amber-bg: #3A2C10;
+  --amber-tx: #F6CF85;
+
+  --green: #4FB08A;
+  --green-bg: #15302A;
+  --green-tx: #A3DCC5;
+
+  --red: #E36D61;
+  --red-bg: #3A1D1A;
+  --red-tx: #F3AFA7;
+
+  --neutral-bg: #263040;
+  --neutral-tx: #C9D2DD;
+
+  --fill: #2F3B4B;
+  --on-fill: #FFFFFF;
+
+  color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #10151B;
+  --card: #18202A;
+  --white: #1F2833;
+
+  --ink: #E6EAEF;
+  --steel: #97A3B4;
+  --line: #313C49;
+
+  --amber: #F0A92A;
+  --amber-bg: #3A2C10;
+  --amber-tx: #F6CF85;
+
+  --green: #4FB08A;
+  --green-bg: #15302A;
+  --green-tx: #A3DCC5;
+
+  --red: #E36D61;
+  --red-bg: #3A1D1A;
+  --red-tx: #F3AFA7;
+
+  --neutral-bg: #263040;
+  --neutral-tx: #C9D2DD;
+
+  --fill: #2F3B4B;
+  --on-fill: #FFFFFF;
+
+  color-scheme: dark;
 }
 
 * {
@@ -162,8 +236,8 @@ body {
 
 .btn {
   padding: 13px 16px;
-  background: var(--ink);
-  color: #fff;
+  background: var(--fill);
+  color: var(--on-fill);
   border: none;
   border-radius: var(--r-control);
   font-family: inherit;
@@ -240,7 +314,7 @@ input {
   border-radius: var(--r-control);
   font-family: inherit;
   font-size: 15px;
-  background: #fff;
+  background: var(--white);
   color: var(--ink);
 }
 
@@ -308,8 +382,8 @@ tr:last-child td { border-bottom: none; }
 .banner--neutral { background: var(--neutral-bg); color: var(--neutral-tx); }
 
 .target-card {
-  background: var(--ink);
-  color: #fff;
+  background: var(--fill);
+  color: var(--on-fill);
   border-radius: var(--r-card);
   padding: 16px;
 }
@@ -694,8 +768,8 @@ tr:last-child td { border-bottom: none; }
    Everything else on the page is smaller than this. Dark panel, so the amber
    label on it is the only amber in view. */
 .hero {
-  background: var(--ink);
-  color: #fff;
+  background: var(--fill);
+  color: var(--on-fill);
   border-radius: var(--r);
   padding: 16px 18px;
 }
@@ -833,7 +907,7 @@ input.b {
   font-family: inherit;
   font-size: 13px;
   text-align: right;
-  background: #fff;
+  background: var(--white);
   color: var(--ink);
   font-variant-numeric: tabular-nums;
 }

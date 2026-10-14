@@ -627,8 +627,61 @@ export function useNetWorth() {
  * business takes in is never reported as household income.
  */
 export function useMonthTotals() {
-  const { transactions, budgetLines } = useData()
-  return useMonthTotalsFor(transactions, budgetLines)
+  const { transactions, budgetLines, accounts } = useData()
+  return useMonthTotalsFor(transactions, budgetLines, accounts)
+}
+
+/**
+ * How much of a month's attack rows is really some debt's MINIMUM.
+ *
+ * The categoriser files every payment to the current target as `attack`. But
+ * plan_settings.attack_fund is the surplus ABOVE the minimums, and the target's
+ * own minimum is already budgeted under fixed "Debt minimums" — so a month in
+ * which only the minimum went out read as $194 of attack money that never
+ * existed, and the attack_missing alert could never fire while the minimum
+ * alone filled it.
+ *
+ * Rows stay `attack` (they ARE payments to the target). The totals take the
+ * minimum back out instead: per debt account a row names, the first
+ * `minimum_payment` of the month counts as that minimum and only the remainder
+ * as attack. Grouped per account, not against "the" target, so a month in which
+ * the target clears and its successor is paid nets each one by its own minimum.
+ * A row naming no tracked debt keeps its full amount as attack.
+ */
+export function minimumsInsideAttack(
+  rows: Pick<Transaction, 'bucket' | 'name' | 'merchant_name' | 'amount'>[],
+  debts: Pick<Account, 'id' | 'name' | 'payment_aliases' | 'minimum_payment' | 'kind'>[],
+): number {
+  const keyed = debts
+    .filter((d) => d.kind !== 'checking' && d.kind !== 'savings')
+    .map((d) => ({
+      d,
+      names: [d.name, ...(d.payment_aliases ?? [])]
+        .map((n) => String(n ?? '').trim().toLowerCase())
+        .filter((n) => n.length >= 4),
+    }))
+
+  const paid = new Map<string, number>()
+  for (const t of rows) {
+    if (t.bucket !== 'attack' || t.amount <= 0) continue
+    const hay = `${t.name ?? ''} ${t.merchant_name ?? ''}`.toLowerCase()
+    // Longest name first, so an alias that contains another account's name
+    // lands on the account it actually describes.
+    let best: { id: string; len: number } | null = null
+    for (const { d, names } of keyed) {
+      for (const n of names) {
+        if (hay.includes(n) && (!best || n.length > best.len)) best = { id: d.id, len: n.length }
+      }
+    }
+    if (best) paid.set(best.id, (paid.get(best.id) ?? 0) + t.amount)
+  }
+
+  let portion = 0
+  for (const { d } of keyed) {
+    const sum = paid.get(d.id) ?? 0
+    if (sum > 0) portion += Math.min(sum, Math.max(0, d.minimum_payment))
+  }
+  return Math.round(portion * 100) / 100
 }
 
 /**
@@ -638,11 +691,25 @@ export function useMonthTotals() {
  * `transactions` must already be narrowed to the household, as both the
  * provider and useMonthView() narrow theirs.
  */
-export function useMonthTotalsFor(transactions: Transaction[], budgetLines: BudgetLine[]) {
+export function useMonthTotalsFor(
+  transactions: Transaction[],
+  budgetLines: BudgetLine[],
+  /** Debt accounts, so the target's minimum can be moved out of attack. */
+  accounts: Account[] = [],
+) {
   return useMemo(() => {
     const spent: Record<string, number> = {}
     for (const t of transactions) {
       spent[t.bucket] = (spent[t.bucket] ?? 0) + t.amount
+    }
+
+    // A minimum paid to the target is a minimum, not attack money. Moved, not
+    // dropped: the fixed bucket gains exactly what attack loses, so the month's
+    // total outgoings are unchanged.
+    const minimumInAttack = minimumsInsideAttack(transactions, accounts)
+    if (minimumInAttack > 0) {
+      spent.attack = Math.round(((spent.attack ?? 0) - minimumInAttack) * 100) / 100
+      spent.fixed = Math.round(((spent.fixed ?? 0) + minimumInAttack) * 100) / 100
     }
 
     const targets: Record<string, number> = {}
@@ -657,8 +724,10 @@ export function useMonthTotalsFor(transactions: Transaction[], budgetLines: Budg
       spent,
       targets,
       income,
+      /** The part of the attack rows that was the target's minimum, now under fixed. */
+      minimumInAttack,
       bucketSpent: (b: Bucket) => spent[b] ?? 0,
       bucketTarget: (b: string) => targets[b] ?? 0,
     }
-  }, [transactions, budgetLines])
+  }, [transactions, budgetLines, accounts])
 }

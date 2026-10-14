@@ -173,6 +173,19 @@ Deno.serve(async (req: Request) => {
   const accountRows = accountsRes.data
   const ruleRows = rulesRes.data
   const lineRuleRows = lineRulesRes.data
+  /**
+   * People the business pays. See step 2b in categorize.ts.
+   *
+   * Read on its own and NOT fatal, unlike the reads above. Losing it only means
+   * crew pay routed through a household account reads as a transfer for a night
+   * — exactly the behaviour before this table existed — whereas aborting would
+   * stop every balance and transaction over a refinement.
+   */
+  const crewRes = await admin.from('crew_payees').select('match_text')
+  if (crewRes.error) report.errors.push(`crew_payees unread, step 2b skipped: ${crewRes.error.message}`)
+  const crewNames = ((crewRes.error ? [] : crewRes.data ?? []) as { match_text: string }[])
+    .map((r) => r.match_text.trim().toLowerCase())
+    .filter(Boolean)
 
   /**
    * Which budget line a Plaid category counts against. Longest matching prefix
@@ -501,6 +514,7 @@ Deno.serve(async (req: Request) => {
             debtNames,
             savingsNames,
             rules,
+            crewNames,
             existingBucketSource: prior?.bucket_source,
             existingBucket: prior?.bucket as Bucket | undefined,
           })
