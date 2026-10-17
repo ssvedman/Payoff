@@ -598,7 +598,9 @@ export function useCalendar(anchor: Date, now = new Date()): CalendarModel {
 
     const repaysTrackedDebt = (s: Series): boolean => {
       if (s.direction !== 'out') return false
-      const hay = `${s.label} ${s.descriptor}`.toLowerCase()
+      // The raw descriptors too: the label may be a merchant name that shares no
+      // word with the statement, and aliases are written against the statement.
+      const hay = `${s.label} ${s.descriptor} ${s.rawNames.join(' ')}`.toLowerCase()
       if (namesBusinessAccount(hay, [...debtNames, ...scheduleTexts], debtMasks)) return true
       return PAYMENT_WORD.test(hay) && debtInstitutions.some((inst) => inst.length >= 4 && hay.includes(inst))
     }

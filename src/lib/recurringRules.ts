@@ -195,6 +195,8 @@ export function confirmedSeries(
         // One route, because a hand-marked obligation is named against one
         // account. Nothing was observed, so there is nothing else to list.
         routeAccountIds: o.accountId ? [o.accountId] : [],
+        // Nothing observed, so no descriptors beyond the one it was marked by.
+        rawNames: o.descriptor ? [o.descriptor] : [],
         direction: o.direction,
         label: o.label,
         descriptor: o.descriptor,

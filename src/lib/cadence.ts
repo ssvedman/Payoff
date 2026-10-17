@@ -137,6 +137,16 @@ export interface Series {
    * dangerous thing to decide arithmetic with — see the callers.
    */
   routeAccountIds: string[]
+  /**
+   * The bank's own descriptors behind this series, distinct.
+   *
+   * The label is often Plaid's merchant name, which can name a parent company
+   * rather than anything on the statement — a store card's payments grouped as
+   * "Bread Financial" while every row reads "COMENITY PAY …". Matching a series
+   * to a debt has to see the descriptors, because that is what payment_aliases
+   * are written against.
+   */
+  rawNames: string[]
   direction: Direction
   /** What to call it on screen, cleaned of trace numbers. */
   label: string
@@ -796,6 +806,7 @@ export function detectSeries(events: CadenceEvent[], opts: DetectOptions): Serie
       key,
       accountId: g.accountId,
       routeAccountIds: [...g.routeAccounts],
+      rawNames: [...new Set(g.names)],
       direction: g.direction,
       label,
       descriptor: key.startsWith('line:') ? key.slice(5) : key.split('|')[1],
