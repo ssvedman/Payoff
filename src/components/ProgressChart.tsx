@@ -626,97 +626,124 @@ export function ProgressSparkline({
 export function NetWorthSinceStart({
   actual,
   plan,
+  measuredFrom,
   height = 46,
 }: {
   actual: { date: string; total: number }[]
-  /** The plan's figure on each of the same dates. */
+  /** The plan's figure on some of the same dates; matched by date. */
   plan: { date: string; total: number }[]
+  /**
+   * The first MEASURED day. Days before it were worked back from transactions
+   * and are drawn fainter, so reconstruction never passes for a reading.
+   */
+  measuredFrom?: string
   height?: number
 }) {
-  if (actual.length < 2) return null
+  const n = actual.length
+  if (n < 2) return null
 
   const W = 200
   const H = height
   const pad = 3
+  const planByDate = new Map(plan.map((p) => [p.date, p.total]))
   const values = [...actual.map((p) => p.total), ...plan.map((p) => p.total)]
   const min = Math.min(...values)
   const max = Math.max(...values)
   const span = Math.max(max - min, 1)
-  const n = actual.length
 
-  const path = (pts: { total: number }[]) =>
-    pts
-      .map((p, i) => {
-        const x = pad + (i / (n - 1)) * (W - pad * 2)
-        const y = pad + (1 - (p.total - min) / span) * (H - pad * 2)
-        return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`
-      })
-      .join(' ')
+  const xAt = (i: number) => pad + (i / (n - 1)) * (W - pad * 2)
+  const yAt = (v: number) => pad + (1 - (v - min) / span) * (H - pad * 2)
+  const path = (pts: { i: number; v: number }[]) =>
+    pts.map((p, k) => `${k === 0 ? 'M' : 'L'}${xAt(p.i).toFixed(1)},${yAt(p.v).toFixed(1)}`).join(' ')
+
+  const split = measuredFrom ? Math.max(0, actual.findIndex((p) => p.date >= measuredFrom)) : 0
+  const pts = actual.map((p, i) => ({ i, v: p.total }))
+  const before = split > 0 ? pts.slice(0, split + 1) : []
+  const after = pts.slice(split)
+  const planPts = actual
+    .map((p, i) => ({ i, v: planByDate.get(p.date) }))
+    .filter((p): p is { i: number; v: number } => p.v !== undefined)
 
   /**
    * Time along the bottom: the first day, the first of each month inside the
    * window, and the last day. Drawn in HTML under the drawing, not as SVG text,
    * because the drawing stretches to its box and text inside it would stretch
-   * with it. A faint rule marks each month start on the drawing itself.
+   * with it. A faint rule marks each month start on the drawing itself; with
+   * many months only every few carry a label, so they stay legible in a card.
    */
-  const xPct = (i: number) => ((pad + (i / (n - 1)) * (W - pad * 2)) / W) * 100
-  const short = (iso: string) => `${MONTH_NAMES[Number(iso.slice(5, 7)) - 1]?.slice(0, 3) ?? ''} ${Number(iso.slice(8, 10))}`
+  const xPct = (i: number) => (xAt(i) / W) * 100
+  const mon = (iso: string) => MONTH_NAMES[Number(iso.slice(5, 7)) - 1]?.slice(0, 3) ?? ''
+  const short = (iso: string) => `${mon(iso)} ${Number(iso.slice(8, 10))}`
   const monthStarts = actual
     .map((p, i) => ({ i, date: p.date }))
     .filter((p) => p.i > 0 && p.i < n - 1 && p.date.endsWith('-01'))
-  const ticks = [{ i: 0, date: actual[0].date }, ...monthStarts, { i: n - 1, date: actual[n - 1].date }]
-    // Drop a month label that would sit on top of either end's.
-    .filter((t, k, all) => k === 0 || k === all.length - 1 || (xPct(t.i) > 12 && xPct(t.i) < 88))
+  const every = Math.max(1, Math.ceil(monthStarts.length / 4))
+  const labelled = monthStarts.filter((_, k) => (monthStarts.length - 1 - k) % every === 0)
+  const ticks = [
+    { i: 0, text: short(actual[0].date) },
+    ...labelled
+      .filter((t) => xPct(t.i) > 14 && xPct(t.i) < 86)
+      .map((t) => ({ i: t.i, text: mon(t.date) })),
+    { i: n - 1, text: short(actual[n - 1].date) },
+  ]
 
   return (
     <div style={{ marginTop: 7 }}>
-    <svg
-      viewBox={`0 0 ${W} ${H}`}
-      width="100%"
-      height={H}
-      aria-hidden="true"
-      preserveAspectRatio="none"
-      style={{ display: 'block' }}
-    >
-      {monthStarts.map((m) => {
-        const x = pad + (m.i / (n - 1)) * (W - pad * 2)
-        return (
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        width="100%"
+        height={H}
+        aria-hidden="true"
+        preserveAspectRatio="none"
+        style={{ display: 'block' }}
+      >
+        {monthStarts.map((m) => (
           <line
             key={m.date}
-            x1={x}
-            x2={x}
+            x1={xAt(m.i)}
+            x2={xAt(m.i)}
             y1={0}
             y2={H}
             stroke="var(--line)"
             strokeWidth="1"
             vectorEffect="non-scaling-stroke"
           />
-        )
-      })}
-      {plan.length === n && (
+        ))}
+        {planPts.length > 1 && (
+          <path
+            d={path(planPts)}
+            fill="none"
+            stroke={PLAN_COLOR}
+            strokeWidth="1.5"
+            strokeDasharray="5 4"
+            vectorEffect="non-scaling-stroke"
+            opacity={0.6}
+          />
+        )}
+        {before.length > 1 && (
+          <path
+            d={path(before)}
+            fill="none"
+            stroke={ACTUAL_COLOR}
+            strokeWidth="2"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+            opacity={0.4}
+          />
+        )}
         <path
-          d={path(plan)}
+          d={path(after)}
           fill="none"
-          stroke={PLAN_COLOR}
-          strokeWidth="1.5"
-          strokeDasharray="5 4"
+          stroke={ACTUAL_COLOR}
+          strokeWidth="2.5"
+          strokeLinejoin="round"
           vectorEffect="non-scaling-stroke"
-          opacity={0.6}
         />
-      )}
-      <path
-        d={path(actual)}
-        fill="none"
-        stroke={ACTUAL_COLOR}
-        strokeWidth="2.5"
-        strokeLinejoin="round"
-        vectorEffect="non-scaling-stroke"
-      />
-    </svg>
+      </svg>
       <div className="tiny muted tnum" style={{ position: 'relative', height: 14, marginTop: 2 }}>
         {ticks.map((t, k) => (
           <span
-            key={t.date}
+            key={`${t.i}-${t.text}`}
             style={{
               position: 'absolute',
               left: `${xPct(t.i)}%`,
@@ -724,7 +751,7 @@ export function NetWorthSinceStart({
               whiteSpace: 'nowrap',
             }}
           >
-            {short(t.date)}
+            {t.text}
           </span>
         ))}
       </div>

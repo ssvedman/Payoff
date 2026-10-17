@@ -2,7 +2,7 @@ import { useMemo, type ReactNode } from 'react'
 import BusinessBars, { type BarMonth } from '../components/BusinessBars'
 import TrendChart from '../components/TrendChart'
 import { NetWorthSinceStart } from '../components/ProgressChart'
-import { useDailyNetPosition } from '../lib/progressData'
+import { extendBackward, feedStart, useDailyNetPosition, useNetHistoryInputs } from '../lib/progressData'
 import { useBusinessMonths } from '../lib/businessMonths'
 import { useData, useNetWorth, type Account } from '../lib/data'
 import {
@@ -161,7 +161,7 @@ function BoxTitle({ children, sub }: { children: ReactNode; sub?: ReactNode }) {
 }
 
 export default function Business() {
-  const { businessAccounts, lastSyncedAt, loading: dataLoading, error: dataError } = useData()
+  const { accounts, businessAccounts, lastSyncedAt, loading: dataLoading, error: dataError } = useData()
   const { debtTotal } = useNetWorth()
   const view = useBusinessMonths()
   const summary = view.summary
@@ -195,6 +195,30 @@ export default function Business() {
   const netPosition = useDailyNetPosition(
     useMemo(() => businessAccounts.filter((a) => a.kind !== 'loan' && a.kind !== 'tax'), [businessAccounts]),
   )
+
+  /**
+   * Before the first reading, worked back from the feed — the same
+   * reconstruction the household line on Progress uses. Every account's rows are
+   * read because a payment's other leg can sit on the household side: 5star
+   * paying a household card is money leaving the business, not a loan flow.
+   */
+  const history = useNetHistoryInputs(useMemo(() => accounts.map((a) => a.id), [accounts]))
+  const backfill = useMemo(() => {
+    const first = netPosition.points[0]
+    if (!first || history.loading) return []
+    const isCash = (a: { kind: string }) => a.kind === 'checking' || a.kind === 'savings'
+    const fed = new Set(history.txns.map((t) => t.account_id))
+    const bizCash = new Set(businessAccounts.filter((a) => isCash(a) && fed.has(a.id)).map((a) => a.id))
+    const from = feedStart(history.txns, bizCash)
+    if (!from || from >= first.date) return []
+    return extendBackward(first, history.txns, {
+      fedCashIds: bizCash,
+      fedDebtIds: new Set(businessAccounts.filter((a) => !isCash(a) && fed.has(a.id)).map((a) => a.id)),
+      mirrorDebtIds: new Set(accounts.filter((a) => !isCash(a) && fed.has(a.id)).map((a) => a.id)),
+      unfedPayees: [],
+      fromIso: from,
+    })
+  }, [netPosition.points, history, accounts, businessAccounts])
 
   /**
    * The month the stat cards and both breakdown boxes report.
@@ -412,7 +436,7 @@ export default function Business() {
       {/* ---------------------------------------------------------------- */}
       {(() => {
         const net = cashTotal - cardTotal
-        const first = netPosition.points[0] ?? null
+        const first = backfill[0] ?? netPosition.points[0] ?? null
         const change = first ? net - first.total : null
         return (
           <div className="stat" style={{ marginBottom: 15 }}>
@@ -429,7 +453,11 @@ export default function Business() {
                 : ''}
             </div>
             {netPosition.points.length > 1 ? (
-              <NetWorthSinceStart actual={netPosition.points} plan={[]} />
+              <NetWorthSinceStart
+                actual={[...backfill, ...netPosition.points]}
+                plan={[]}
+                measuredFrom={netPosition.points[0]?.date}
+              />
             ) : (
               <div className="tiny muted" style={{ marginTop: 4 }}>
                 {netPosition.loading
@@ -440,7 +468,9 @@ export default function Business() {
               </div>
             )}
             <div className="tiny muted" style={{ marginTop: 4 }}>
-              Measured from the bank's daily readings. Not part of the household net worth on Progress.
+              Solid from the bank's daily readings
+              {backfill.length > 0 ? '; faint before that, worked back from transactions' : ''}. Not part
+              of the household net worth on Progress.
             </div>
           </div>
         )

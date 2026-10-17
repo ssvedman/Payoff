@@ -15,6 +15,9 @@ import {
 import {
   buildDailySeries,
   completedPlanMonths,
+  extendBackward,
+  feedStart,
+  useNetHistoryInputs,
   monthsBetween,
   useProgressData,
   type SnapshotProvenance,
@@ -199,6 +202,10 @@ export default function Progress() {
    * lines on the same footing on day one without editing a single stored row.
    * Vehicles are held at today's valuation, as the plan holds them.
    */
+  // Every account, business included: a payment's mirror can sit across the line.
+  const allIds = useMemo(() => accounts.map((a) => a.id), [accounts])
+  const history = useNetHistoryInputs(allIds)
+
   const householdWorth = useMemo(() => {
     if (!frozen) return null
     const from = frozen.version.effective_from
@@ -250,14 +257,42 @@ export default function Progress() {
 
     const first = actualDays[0] ?? null
     const lastPlan = planDays[planDays.length - 1] ?? null
+
+    /**
+     * Before the first reading: worked back from the feed. See extendBackward
+     * for what is walked back, what is held, and why payments to typed-in
+     * debts are not losses.
+     */
+    const household = accounts.filter((a) => !a.is_business)
+    const fed = new Set(history.txns.map((t) => t.account_id))
+    const unfed = household.filter((a) => !isCash(a) && !fed.has(a.id))
+    const scheduleFor = new Map(history.schedules.map((r) => [r.account_id, r]))
+    const unfedPayees = unfed
+      .flatMap((a) => [a.name, ...(a.payment_aliases ?? []), scheduleFor.get(a.id)?.match_text ?? ''])
+      .map((n) => String(n).trim().toLowerCase())
+      .filter((n) => n.length >= 4)
+    const historyFrom = feedStart(history.txns, new Set(household.filter(isCash).map((a) => a.id)))
+    const backfill =
+      first && historyFrom && historyFrom < first.date
+        ? extendBackward(first, history.txns, {
+            fedCashIds: new Set(household.filter((a) => isCash(a) && fed.has(a.id)).map((a) => a.id)),
+            fedDebtIds: new Set(household.filter((a) => !isCash(a) && fed.has(a.id)).map((a) => a.id)),
+            mirrorDebtIds: new Set(accounts.filter((a) => !isCash(a) && fed.has(a.id)).map((a) => a.id)),
+            unfedPayees,
+            fromIso: historyFrom,
+          })
+        : []
+
     return {
       now: round2(netWorthNow.netWorth - businessNow),
+      backfill,
+      measuredFrom: first?.date ?? null,
       actualDays,
       planDays: planDays.length === actualDays.length ? planDays : [],
       changeSinceStart: first ? round2(netWorthNow.netWorth - businessNow - first.total) : null,
       planChange: first && lastPlan ? round2(lastPlan.total - first.total) : null,
     }
-  }, [frozen, accounts, measured, netWorthNow])
+  }, [frozen, accounts, measured, netWorthNow, history])
 
   if (loading || extrasLoading || planState.status === 'loading') return <ProgressSkeleton />
 
@@ -352,10 +387,16 @@ export default function Progress() {
           : 'household, excluding the business'}
       </div>
       {householdWorth && (
-        <NetWorthSinceStart actual={householdWorth.actualDays} plan={householdWorth.planDays} />
+        <NetWorthSinceStart
+          actual={[...householdWorth.backfill, ...householdWorth.actualDays]}
+          plan={householdWorth.planDays}
+          measuredFrom={householdWorth.measuredFrom ?? undefined}
+        />
       )}
       <div className="tiny muted" style={{ marginTop: 4 }}>
-        solid measured · dashed plan · household only
+        solid measured
+        {householdWorth && householdWorth.backfill.length > 0 ? ' · faint worked back from transactions' : ''} ·
+        dashed plan · household only
       </div>
     </div>
   )

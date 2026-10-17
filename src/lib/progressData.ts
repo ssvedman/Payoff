@@ -574,3 +574,183 @@ export function useDailyNetPosition(accounts: Account[], fromIso: string | null 
 
   return state
 }
+
+/** A posted transaction, as the backward reconstruction needs it. */
+export interface FeedTxn {
+  account_id: string
+  posted_on: string
+  amount: number | string
+  name: string | null
+  plaid_category: string | null
+}
+
+/**
+ * Transactions on the given accounts, plus the loan schedules, for drawing a
+ * net position back past the first measured reading.
+ */
+export function useNetHistoryInputs(accountIds: string[]) {
+  const key = useMemo(() => [...accountIds].sort().join(','), [accountIds])
+  const [state, setState] = useState<{
+    loading: boolean
+    error: string | null
+    txns: FeedTxn[]
+    schedules: { account_id: string; match_text: string | null }[]
+  }>({ loading: true, error: null, txns: [], schedules: [] })
+
+  useEffect(() => {
+    let active = true
+    const ids = key ? key.split(',') : []
+    if (ids.length === 0) {
+      setState({ loading: false, error: null, txns: [], schedules: [] })
+      return
+    }
+    void (async () => {
+      const txns: FeedTxn[] = []
+      let error: string | null = null
+      for (let from = 0; ; from += PAGE) {
+        const res = await supabase
+          .from('transactions')
+          .select('account_id, posted_on, amount, name, plaid_category')
+          .in('account_id', ids)
+          .eq('pending', false)
+          .order('posted_on')
+          .order('id')
+          .range(from, from + PAGE - 1)
+        if (res.error) {
+          error = res.error.message
+          break
+        }
+        const rows = (res.data ?? []) as unknown as FeedTxn[]
+        txns.push(...rows)
+        if (rows.length < PAGE) break
+      }
+      const sched = await supabase.from('debt_schedules').select('account_id, match_text')
+      if (!active) return
+      setState({
+        loading: false,
+        error: error ?? sched.error?.message ?? null,
+        txns,
+        schedules: (sched.data ?? []) as { account_id: string; match_text: string | null }[],
+      })
+    })()
+    return () => {
+      active = false
+    }
+  }, [key])
+
+  return state
+}
+
+/**
+ * The net position BEFORE the first measured reading, worked back from the
+ * transaction feed. Reconstruction, not measurement — the caller draws it as such.
+ *
+ * One identity does the work: for a depository account a posted amount is money
+ * out, and for a card it is money owed, so in both cases the net position on
+ * day d is the anchor's figure PLUS every amount posted after d. A transfer
+ * between two fed accounts adds and subtracts the same sum and vanishes, as it
+ * should — including a card payment, whose two legs are both on record.
+ *
+ * Borrowing and repaying are not gains and losses, and the feed only shows ONE
+ * leg of them whenever the other side is a lender we do not follow: a personal
+ * loan paid off in full with the proceeds of another, a buy-now-pay-later
+ * instalment, a payment to a typed-in card. Walked back naively, a $38,910
+ * payoff to an untracked lender read as $38,910 of wealth that had vanished.
+ * So a one-legged repayment out of a cash account, and a one-legged loan payout
+ * into one, are left out. "One-legged" means no fed debt shows the matching
+ * credit (same amount, within a week). The interest inside such a payment is
+ * lost with it; that is small beside the principal it would otherwise misstate.
+ *
+ * Accounts with no feed are held at their first reading.
+ *
+ * It stops at `fromIso`, which the caller sets where the feed itself starts to
+ * thin out: before that the money moving through the main accounts is simply
+ * not on record.
+ */
+export function extendBackward(
+  anchor: DailyPoint,
+  txns: FeedTxn[],
+  opts: {
+    fedCashIds: Set<string>
+    fedDebtIds: Set<string>
+    /**
+     * Every fed debt, on either side of the household/business line. A
+     * payment's mirror can sit across it — the business paying a household
+     * card — and then the payment is real money leaving THIS side, not a loan
+     * flow to be ignored. Defaults to fedDebtIds.
+     */
+    mirrorDebtIds?: Set<string>
+    /** Lowercased names that mark a payment to a debt with no feed. */
+    unfedPayees: string[]
+    fromIso: string
+  },
+): DailyPoint[] {
+  const inWindow = txns.filter(
+    (t) =>
+      (opts.fedCashIds.has(t.account_id) || opts.fedDebtIds.has(t.account_id)) &&
+      t.posted_on <= anchor.date &&
+      t.posted_on > opts.fromIso,
+  )
+
+  // Credits landing on fed debts, by cents, so a cash-side payment can find its mirror.
+  const mirrorIds = opts.mirrorDebtIds ?? opts.fedDebtIds
+  const credits = txns
+    .filter((t) => mirrorIds.has(t.account_id) && num(t.amount) < 0)
+    .map((t) => ({ cents: Math.round(-num(t.amount) * 100), day: Date.parse(`${t.posted_on}T12:00:00Z`), used: false }))
+  const WEEK = 7 * 86_400_000
+  const mirrored = (amount: number, iso: string): boolean => {
+    const cents = Math.round(amount * 100)
+    const day = Date.parse(`${iso}T12:00:00Z`)
+    const hit = credits.find((c) => !c.used && c.cents === cents && Math.abs(c.day - day) <= WEEK)
+    if (hit) hit.used = true
+    return !!hit
+  }
+
+  const byDay = new Map<string, number>()
+  for (const t of inWindow) {
+    const amount = num(t.amount)
+    if (opts.fedCashIds.has(t.account_id)) {
+      const cat = (t.plaid_category ?? '').toUpperCase()
+      const hay = String(t.name ?? '').toLowerCase()
+      const repayment =
+        amount > 0 && (cat.startsWith('LOAN_PAYMENTS') || opts.unfedPayees.some((n) => hay.includes(n)))
+      const payout = amount < 0 && cat.startsWith('LOAN_DISBURSEMENTS')
+      if (payout) continue
+      if (repayment && !mirrored(amount, t.posted_on)) continue
+    }
+    byDay.set(t.posted_on, (byDay.get(t.posted_on) ?? 0) + amount)
+  }
+
+  const out: DailyPoint[] = []
+  let running = 0
+  const d = new Date(`${anchor.date}T12:00:00Z`)
+  for (;;) {
+    // Moving from day d+1 back to d adds what posted on d+1.
+    const next = d.toISOString().slice(0, 10)
+    d.setUTCDate(d.getUTCDate() - 1)
+    const iso = d.toISOString().slice(0, 10)
+    if (iso < opts.fromIso) break
+    running += byDay.get(next) ?? 0
+    out.push({ date: iso, total: round2(anchor.total + running) })
+  }
+  return out.reverse()
+}
+
+/**
+ * Where the feed is complete enough to walk back through: the latest first
+ * transaction among the cash accounts that carry real traffic. An account with
+ * a handful of rows does not hold the line back; one with hundreds whose
+ * history starts later does, because before then its money is missing.
+ */
+export function feedStart(txns: FeedTxn[], cashIds: Set<string>, minRows = 10): string | null {
+  const first = new Map<string, string>()
+  const count = new Map<string, number>()
+  for (const t of txns) {
+    if (!cashIds.has(t.account_id)) continue
+    count.set(t.account_id, (count.get(t.account_id) ?? 0) + 1)
+    const f = first.get(t.account_id)
+    if (!f || t.posted_on < f) first.set(t.account_id, t.posted_on)
+  }
+  const starts = [...first.entries()].filter(([id]) => (count.get(id) ?? 0) >= minRows).map(([, d]) => d)
+  return starts.length ? starts.sort().pop() ?? null : null
+}
