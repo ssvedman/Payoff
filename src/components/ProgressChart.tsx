@@ -653,15 +653,46 @@ export function NetWorthSinceStart({
       })
       .join(' ')
 
+  /**
+   * Time along the bottom: the first day, the first of each month inside the
+   * window, and the last day. Drawn in HTML under the drawing, not as SVG text,
+   * because the drawing stretches to its box and text inside it would stretch
+   * with it. A faint rule marks each month start on the drawing itself.
+   */
+  const xPct = (i: number) => ((pad + (i / (n - 1)) * (W - pad * 2)) / W) * 100
+  const short = (iso: string) => `${MONTH_NAMES[Number(iso.slice(5, 7)) - 1]?.slice(0, 3) ?? ''} ${Number(iso.slice(8, 10))}`
+  const monthStarts = actual
+    .map((p, i) => ({ i, date: p.date }))
+    .filter((p) => p.i > 0 && p.i < n - 1 && p.date.endsWith('-01'))
+  const ticks = [{ i: 0, date: actual[0].date }, ...monthStarts, { i: n - 1, date: actual[n - 1].date }]
+    // Drop a month label that would sit on top of either end's.
+    .filter((t, k, all) => k === 0 || k === all.length - 1 || (xPct(t.i) > 12 && xPct(t.i) < 88))
+
   return (
+    <div style={{ marginTop: 7 }}>
     <svg
       viewBox={`0 0 ${W} ${H}`}
       width="100%"
       height={H}
       aria-hidden="true"
       preserveAspectRatio="none"
-      style={{ display: 'block', marginTop: 7 }}
+      style={{ display: 'block' }}
     >
+      {monthStarts.map((m) => {
+        const x = pad + (m.i / (n - 1)) * (W - pad * 2)
+        return (
+          <line
+            key={m.date}
+            x1={x}
+            x2={x}
+            y1={0}
+            y2={H}
+            stroke="var(--line)"
+            strokeWidth="1"
+            vectorEffect="non-scaling-stroke"
+          />
+        )
+      })}
       {plan.length === n && (
         <path
           d={path(plan)}
@@ -682,5 +713,21 @@ export function NetWorthSinceStart({
         vectorEffect="non-scaling-stroke"
       />
     </svg>
+      <div className="tiny muted tnum" style={{ position: 'relative', height: 14, marginTop: 2 }}>
+        {ticks.map((t, k) => (
+          <span
+            key={t.date}
+            style={{
+              position: 'absolute',
+              left: `${xPct(t.i)}%`,
+              transform: k === 0 ? 'none' : k === ticks.length - 1 ? 'translateX(-100%)' : 'translateX(-50%)',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {short(t.date)}
+          </span>
+        ))}
+      </div>
+    </div>
   )
 }
