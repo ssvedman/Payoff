@@ -184,6 +184,24 @@ export function daysUntil(iso: string | null): number | null {
   )
 }
 
+/**
+ * How early a payment may come and still be for THIS due date: once the
+ * statement cuts, which is three to four weeks ahead. The nightly roll of
+ * typed-in due dates (roll_scheduled_due_dates) uses the same 25 days, so the
+ * page and the database cannot disagree about whether a bill is paid.
+ */
+export const PAID_EARLY_DAYS = 25
+
+/** Does a payment on `paid` settle the instalment due on `due`? ISO dates. */
+export function paymentCovers(paid: string | null | undefined, due: string | null | undefined): boolean {
+  if (!paid || !due) return false
+  const [y, m, d] = due.split('-').map(Number)
+  if (!y || !m || !d) return false
+  // Calendar arithmetic on the date's own parts, so no timezone enters it.
+  const opens = new Date(Date.UTC(y, m - 1, d - PAID_EARLY_DAYS)).toISOString().slice(0, 10)
+  return paid >= opens
+}
+
 export interface DueStatus {
   /** "due in 3 days", "due today", "5 days overdue", "paid $119 on 15 Sep". */
   label: string | null
@@ -203,7 +221,9 @@ export interface DueStatus {
  * which is what a card paid on the 15th did: it read "5 days overdue" on the
  * 20th while being current.
  *
- * So a payment dated on or after the due date withdraws the late claim. Only
+ * So a payment dated on or after the due date withdraws the late claim — or
+ * one made early, inside PAID_EARLY_DAYS before it: a card paid on the 9th for
+ * the 17th read "due tomorrow" on the 16th. Only
  * that claim: the payment is then stated with its amount and its date rather
  * than being summarised as "paid", because a part payment is also a payment on
  * record and this page is not entitled to decide whether it was enough. The
@@ -227,7 +247,7 @@ export function dueStatus(debt: {
   if (!due) return { label: null, urgent: false, settled: false }
 
   const paid = debt.last_payment_on ?? null
-  if (paid && paid >= due) {
+  if (paid && paymentCovers(paid, due)) {
     const amount =
       typeof debt.last_payment_amount === 'number' && debt.last_payment_amount > 0
         ? `${money(debt.last_payment_amount)} `

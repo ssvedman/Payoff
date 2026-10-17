@@ -14,7 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from './supabase'
 import { isCleared, useData, type Account } from './data'
 import { namesBusinessAccount } from './categorize'
-import { accountLabel, isoDate, MONTH_NAMES, parseDateOnly } from './format'
+import { accountLabel, isoDate, MONTH_NAMES, parseDateOnly, paymentCovers } from './format'
 import {
   WINDOW_DAYS,
   clampedDay,
@@ -213,7 +213,8 @@ export function duePaymentsFor(
      * the next one yet. Left alone it renders as a payment overdue today, on an
      * account that is current.
      */
-    if (account.last_payment_on && account.last_payment_on >= account.next_due_on) {
+    // Early counts too — see paymentCovers().
+    if (paymentCovers(account.last_payment_on, account.next_due_on)) {
       base = clampedDay(base.getFullYear(), base.getMonth() + 1, base.getDate())
       rolled = true
     }
