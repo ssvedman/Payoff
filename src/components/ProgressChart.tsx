@@ -610,150 +610,305 @@ export function ProgressSparkline({
   )
 }
 
+/** "−$52k" / "$4k" / "$500". Signed, because net worth is often below zero. */
+function signedAxisMoney(v: number): string {
+  if (Math.abs(v) < 0.5) return '0'
+  const sign = v < 0 ? '−' : ''
+  const a = Math.abs(v)
+  return a >= 1000 ? `${sign}$${Math.round(a / 1000)}k` : `${sign}$${Math.round(a)}`
+}
+
+/** Gridlines across [min, max] at a step a person reads without arithmetic. */
+function rangeGrid(min: number, max: number, target: number): number[] {
+  const raw = Math.max(max - min, 1) / target
+  const mag = 10 ** Math.floor(Math.log10(raw))
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).reduce((b, s) => (Math.abs(s - raw) < Math.abs(b - raw) ? s : b))
+  const out: number[] = []
+  for (let v = Math.ceil(min / step) * step; v <= max; v += step) out.push(Math.round(v * 100) / 100)
+  return out
+}
+
 /**
- * Net worth since the plan began: what was measured, beside what the plan said.
+ * Net position by DAY, full size, with the same hover the Total owed chart has.
  *
- * The card used to draw the plan's forecast alone, a near-straight line from
- * the first month to the last, under today's measured figure — so the only
- * line on it was the one thing on the card that had not happened. This draws
- * the measured line, solid, over exactly the days there are readings for, and
- * the plan dashed across the same days on the same scale. Two lines that share
- * a y axis can be compared by eye; a line and a number cannot.
- *
- * Same visual rules as the main chart: measured is solid ink, a projection is
- * the same ink dashed. No amber.
+ * Measured days solid, days worked back from transactions faint, the plan
+ * dashed — the conventions of NetWorthSinceStart, at a size where the figures
+ * can be read. The y axis is fitted to the data rather than drawn from zero:
+ * a net worth of −$52k against a zero baseline is a flat line at the bottom of
+ * an empty box, and the movement is the thing being shown. The gridline labels
+ * carry the scale so the fit cannot pass for a change in size.
  */
-export function NetWorthSinceStart({
+export function NetWorthChart({
   actual,
   plan,
   measuredFrom,
-  height = 46,
+  format,
+  label = 'net worth',
 }: {
   actual: { date: string; total: number }[]
-  /** The plan's figure on some of the same dates; matched by date. */
   plan: { date: string; total: number }[]
-  /**
-   * The first MEASURED day. Days before it were worked back from transactions
-   * and are drawn fainter, so reconstruction never passes for a reading.
-   */
   measuredFrom?: string
-  height?: number
+  format: (n: number) => string
+  label?: string
 }) {
+  const [wrap, setWrap] = useState<HTMLDivElement | null>(null)
+  const [hover, setHover] = useState<number | null>(null)
+  const [W, setW] = useState(W0)
+
+  useEffect(() => {
+    if (!wrap) return
+    const apply = (w: number) => {
+      if (w > 0) setW(Math.round(w))
+    }
+    apply(wrap.getBoundingClientRect().width)
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) apply(e.contentRect.width)
+    })
+    ro.observe(wrap)
+    return () => ro.disconnect()
+  }, [wrap])
+
+  const narrow = W < 420
+  const H = narrow ? 170 : 240
+  const PAD = { top: 16, right: 14, left: narrow ? 40 : 54, bottom: 26 }
+  const innerW = W - PAD.left - PAD.right
+  const innerH = H - PAD.top - PAD.bottom
   const n = actual.length
-  if (n < 2) return null
 
-  const W = 200
-  const H = height
-  const pad = 3
-  const planByDate = new Map(plan.map((p) => [p.date, p.total]))
-  const values = [...actual.map((p) => p.total), ...plan.map((p) => p.total)]
-  const min = Math.min(...values)
-  const max = Math.max(...values)
-  const span = Math.max(max - min, 1)
+  const geom = useMemo(() => {
+    if (n < 2) return null
+    const planByDate = new Map(plan.map((p) => [p.date, p.total]))
+    const values = [...actual.map((p) => p.total), ...plan.map((p) => p.total)]
+    const lo = Math.min(...values)
+    const hi = Math.max(...values)
+    const padV = Math.max((hi - lo) * 0.08, 50)
+    const min = lo - padV
+    const max = hi + padV
+    const x = (i: number) => PAD.left + (i / (n - 1)) * innerW
+    const y = (v: number) => PAD.top + innerH - ((v - min) / (max - min)) * innerH
+    const line = (pts: { i: number; v: number }[]) =>
+      pts.map((p, k) => `${k === 0 ? 'M' : 'L'}${x(p.i).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ')
+    const split = measuredFrom ? Math.max(0, actual.findIndex((p) => p.date >= measuredFrom)) : 0
+    const pts = actual.map((p, i) => ({ i, v: p.total }))
+    const planPts = actual
+      .map((p, i) => ({ i, v: planByDate.get(p.date) }))
+      .filter((p): p is { i: number; v: number } => p.v !== undefined)
+    return {
+      x,
+      y,
+      min,
+      max,
+      split,
+      planByDate,
+      before: split > 0 ? line(pts.slice(0, split + 1)) : null,
+      after: line(pts.slice(split)),
+      plan: planPts.length > 1 ? line(planPts) : null,
+    }
+  }, [actual, plan, measuredFrom, n, innerW, innerH, PAD.left, PAD.top])
 
-  const xAt = (i: number) => pad + (i / (n - 1)) * (W - pad * 2)
-  const yAt = (v: number) => pad + (1 - (v - min) / span) * (H - pad * 2)
-  const path = (pts: { i: number; v: number }[]) =>
-    pts.map((p, k) => `${k === 0 ? 'M' : 'L'}${xAt(p.i).toFixed(1)},${yAt(p.v).toFixed(1)}`).join(' ')
+  if (!geom) return null
+  const { x, y } = geom
+  const grid = rangeGrid(geom.min, geom.max, narrow ? 3 : 4)
 
-  const split = measuredFrom ? Math.max(0, actual.findIndex((p) => p.date >= measuredFrom)) : 0
-  const pts = actual.map((p, i) => ({ i, v: p.total }))
-  const before = split > 0 ? pts.slice(0, split + 1) : []
-  const after = pts.slice(split)
-  const planPts = actual
-    .map((p, i) => ({ i, v: planByDate.get(p.date) }))
-    .filter((p): p is { i: number; v: number } => p.v !== undefined)
-
-  /**
-   * Time along the bottom: the first day, the first of each month inside the
-   * window, and the last day. Drawn in HTML under the drawing, not as SVG text,
-   * because the drawing stretches to its box and text inside it would stretch
-   * with it. A faint rule marks each month start on the drawing itself; with
-   * many months only every few carry a label, so they stay legible in a card.
-   */
-  const xPct = (i: number) => (xAt(i) / W) * 100
   const mon = (iso: string) => MONTH_NAMES[Number(iso.slice(5, 7)) - 1]?.slice(0, 3) ?? ''
-  const short = (iso: string) => `${mon(iso)} ${Number(iso.slice(8, 10))}`
-  const monthStarts = actual
-    .map((p, i) => ({ i, date: p.date }))
-    .filter((p) => p.i > 0 && p.i < n - 1 && p.date.endsWith('-01'))
-  const every = Math.max(1, Math.ceil(monthStarts.length / 4))
+  const longDay = (iso: string) => `${mon(iso)} ${Number(iso.slice(8, 10))}, ${iso.slice(0, 4)}`
+  const monthStarts = actual.map((p, i) => ({ i, date: p.date })).filter((p) => p.i > 0 && p.date.endsWith('-01'))
+  const every = Math.max(1, Math.ceil(monthStarts.length / (narrow ? 3 : 7)))
   const labelled = monthStarts.filter((_, k) => (monthStarts.length - 1 - k) % every === 0)
-  const ticks = [
-    { i: 0, text: short(actual[0].date) },
-    ...labelled
-      .filter((t) => xPct(t.i) > 14 && xPct(t.i) < 86)
-      .map((t) => ({ i: t.i, text: mon(t.date) })),
-    { i: n - 1, text: short(actual[n - 1].date) },
-  ]
+
+  function onMove(e: React.PointerEvent) {
+    if (!wrap) return
+    const rect = wrap.getBoundingClientRect()
+    const vx = ((e.clientX - rect.left) / rect.width) * W
+    const i = Math.round(((vx - PAD.left) / innerW) * (n - 1))
+    setHover(Math.max(0, Math.min(n - 1, i)))
+  }
+
+  const h = hover === null ? null : actual[hover]
+  const hPlan = h ? geom.planByDate.get(h.date) : undefined
+  const worked = hover !== null && hover < geom.split
 
   return (
-    <div style={{ marginTop: 7 }}>
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        width="100%"
-        height={H}
-        aria-hidden="true"
-        preserveAspectRatio="none"
-        style={{ display: 'block' }}
-      >
-        {monthStarts.map((m) => (
-          <line
-            key={m.date}
-            x1={xAt(m.i)}
-            x2={xAt(m.i)}
-            y1={0}
-            y2={H}
-            stroke="var(--line)"
-            strokeWidth="1"
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-        {planPts.length > 1 && (
-          <path
-            d={path(planPts)}
-            fill="none"
-            stroke={PLAN_COLOR}
-            strokeWidth="1.5"
-            strokeDasharray="5 4"
-            vectorEffect="non-scaling-stroke"
-            opacity={0.6}
-          />
-        )}
-        {before.length > 1 && (
-          <path
-            d={path(before)}
-            fill="none"
-            stroke={ACTUAL_COLOR}
-            strokeWidth="2"
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-            opacity={0.4}
-          />
-        )}
-        <path
-          d={path(after)}
-          fill="none"
-          stroke={ACTUAL_COLOR}
-          strokeWidth="2.5"
-          strokeLinejoin="round"
-          vectorEffect="non-scaling-stroke"
-        />
-      </svg>
-      <div className="tiny muted tnum" style={{ position: 'relative', height: 14, marginTop: 2 }}>
-        {ticks.map((t, k) => (
-          <span
-            key={`${t.i}-${t.text}`}
+    <div>
+      <div ref={setWrap} style={{ position: 'relative' }}>
+        <svg
+          viewBox={`0 0 ${W} ${H}`}
+          width="100%"
+          height={H}
+          role="img"
+          aria-label={`${label} by day from ${longDay(actual[0].date)} to ${longDay(actual[n - 1].date)}: ${format(actual[0].total)} to ${format(actual[n - 1].total)}.`}
+          style={{ display: 'block', touchAction: 'pan-y' }}
+          onPointerMove={onMove}
+          onPointerDown={onMove}
+          onPointerLeave={() => setHover(null)}
+        >
+          {grid.map((v) => (
+            <g key={v}>
+              <line
+                x1={PAD.left}
+                y1={y(v)}
+                x2={W - PAD.right}
+                y2={y(v)}
+                stroke={Math.abs(v) < 0.5 ? 'var(--line)' : 'var(--bg)'}
+                strokeWidth="1"
+              />
+              <text
+                x={PAD.left - 6}
+                y={y(v) + 3.5}
+                className="tnum"
+                fontSize={narrow ? '8.5' : '9.5'}
+                fill="var(--steel)"
+                textAnchor="end"
+                fontFamily="inherit"
+              >
+                {signedAxisMoney(v)}
+              </text>
+            </g>
+          ))}
+
+          {monthStarts.map((m) => (
+            <line
+              key={m.date}
+              x1={x(m.i)}
+              x2={x(m.i)}
+              y1={PAD.top}
+              y2={PAD.top + innerH}
+              stroke="var(--bg)"
+              strokeWidth="1"
+            />
+          ))}
+
+          {hover !== null && (
+            <line
+              x1={x(hover)}
+              y1={PAD.top}
+              x2={x(hover)}
+              y2={PAD.top + innerH}
+              stroke="var(--steel)"
+              strokeWidth="1"
+              opacity="0.45"
+            />
+          )}
+
+          {geom.plan && (
+            <path
+              d={geom.plan}
+              fill="none"
+              stroke={PLAN_COLOR}
+              strokeWidth="2"
+              strokeDasharray={PLAN_DASH}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity="0.7"
+            />
+          )}
+          {geom.before && (
+            <path
+              d={geom.before}
+              fill="none"
+              stroke={ACTUAL_COLOR}
+              strokeWidth="2.2"
+              strokeLinejoin="round"
+              opacity="0.4"
+            />
+          )}
+          <path d={geom.after} fill="none" stroke={ACTUAL_COLOR} strokeWidth="3" strokeLinejoin="round" />
+
+          {h && (
+            <circle cx={x(hover as number)} cy={y(h.total)} r={4.5} fill={ACTUAL_COLOR} stroke="var(--white)" strokeWidth="1.4" />
+          )}
+
+          <text x={PAD.left} y={H - 8} className="tnum" fontSize={narrow ? '9' : '10'} fill="var(--steel)" fontFamily="inherit">
+            {`${mon(actual[0].date)} ${Number(actual[0].date.slice(8, 10))}`}
+          </text>
+          {labelled
+            .filter((t) => x(t.i) > PAD.left + 40 && x(t.i) < W - PAD.right - 40)
+            .map((t) => (
+              <text
+                key={t.date}
+                x={x(t.i)}
+                y={H - 8}
+                fontSize={narrow ? '9' : '10'}
+                fill="var(--steel)"
+                textAnchor="middle"
+                fontFamily="inherit"
+              >
+                {mon(t.date)}
+              </text>
+            ))}
+          <text
+            x={W - PAD.right}
+            y={H - 8}
+            className="tnum"
+            fontSize={narrow ? '9' : '10'}
+            fill="var(--steel)"
+            textAnchor="end"
+            fontFamily="inherit"
+          >
+            today
+          </text>
+        </svg>
+
+        {h && (
+          <div
+            role="status"
+            className="tiny"
             style={{
               position: 'absolute',
-              left: `${xPct(t.i)}%`,
-              transform: k === 0 ? 'none' : k === ticks.length - 1 ? 'translateX(-100%)' : 'translateX(-50%)',
+              top: 0,
+              left: `${Math.min(Math.max((x(hover as number) / W) * 100, 16), 84)}%`,
+              transform: 'translateX(-50%)',
+              background: 'var(--fill)',
+              color: 'var(--on-fill)',
+              padding: '5px 9px',
+              borderRadius: 'var(--r-control)',
               whiteSpace: 'nowrap',
+              pointerEvents: 'none',
+              lineHeight: 1.4,
             }}
           >
-            {t.text}
+            <div className="tnum" style={{ opacity: 0.7 }}>
+              {longDay(h.date)}
+            </div>
+            <div className="tnum" style={{ fontWeight: 700 }}>
+              {worked ? 'worked back' : 'actual'} {format(h.total)}
+            </div>
+            {hPlan !== undefined && (
+              <div className="tnum">
+                {Math.abs(h.total - hPlan) < 0.5
+                  ? 'on plan'
+                  : h.total > hPlan
+                    ? `${format(h.total - hPlan)} ahead of plan`
+                    : `${format(hPlan - h.total)} behind plan`}
+              </div>
+            )}
+            {hPlan !== undefined && (
+              <div className="tnum" style={{ opacity: 0.8 }}>
+                plan {format(hPlan)}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="legend">
+        <span>
+          <i className="sw" style={{ background: ACTUAL_COLOR }} aria-hidden="true" />
+          Actual
+        </span>
+        {geom.before && (
+          <span>
+            <i className="sw" style={{ background: ACTUAL_COLOR, opacity: 0.4 }} aria-hidden="true" />
+            Worked back from transactions
           </span>
-        ))}
+        )}
+        {geom.plan && (
+          <span>
+            <i className="sw sw--dashed" style={{ color: PLAN_COLOR }} aria-hidden="true" />
+            The plan
+          </span>
+        )}
       </div>
     </div>
   )

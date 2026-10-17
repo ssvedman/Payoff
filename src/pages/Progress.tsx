@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import ProgressChart, { NetWorthSinceStart } from '../components/ProgressChart'
+import ProgressChart, { NetWorthChart } from '../components/ProgressChart'
 import ProgressClearingOrder, {
   useWideScreen,
   type ClearingGroup,
@@ -361,42 +361,84 @@ export default function Progress() {
   const planStalled = lastPlanRow.projected_debt > 0.005
   const minimumsStalled = lastMinimumsRow.projected_debt > 0.005
 
-  const netWorthCard = (
-    <div className="stat">
-      <div className="tiny muted" style={{ fontWeight: 700, letterSpacing: '.05em' }}>
-        NET WORTH
+  /**
+   * Net worth, at the top and full width. It used to be a 40px sparkline in a
+   * third of a row, which could show a direction and nothing else; this is the
+   * figure that goes UP as debt falls, so it gets the room to be read, with the
+   * same hover as Total owed. Household only — the business is on its own page.
+   */
+  const netWorthBox = (
+    <div className="box" style={{ marginBottom: 15 }}>
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'baseline',
+          gap: 10,
+          flexWrap: 'wrap',
+        }}
+      >
+        <div style={{ fontSize: 13, fontWeight: 700 }}>Net worth · household</div>
+        <div className="tiny muted tnum">
+          {householdWorth?.changeSinceStart != null
+            ? `${householdWorth.changeSinceStart >= 0 ? '+' : '−'}${money(Math.abs(householdWorth.changeSinceStart))} since ${startedOn}` +
+              (householdWorth.planChange != null
+                ? ` · plan ${householdWorth.planChange >= 0 ? '+' : '−'}${money(Math.abs(householdWorth.planChange))}`
+                : '')
+            : 'excluding the business'}
+        </div>
       </div>
       <div
         className="tnum"
-        style={{ fontSize: 22, fontWeight: 800, margin: '3px 0 1px', letterSpacing: '-.02em' }}
+        style={{ fontSize: 24, fontWeight: 800, margin: '2px 0 8px', letterSpacing: '-.02em' }}
       >
         {money(householdWorth?.now ?? netWorthNow.netWorth)}
       </div>
-      {/*
-        Everything the household owns less everything it owes. The figure that
-        goes UP: debt falling is the same story told from the only angle where
-        the best possible outcome is an empty chart. Household only — the
-        business is on its own page.
-      */}
-      <div className="tiny muted tnum">
-        {householdWorth?.changeSinceStart != null
-          ? `${householdWorth.changeSinceStart >= 0 ? '+' : '−'}${money(Math.abs(householdWorth.changeSinceStart))} since ${startedOn}` +
-            (householdWorth.planChange != null
-              ? ` · plan ${householdWorth.planChange >= 0 ? '+' : '−'}${money(Math.abs(householdWorth.planChange))}`
-              : '')
-          : 'household, excluding the business'}
-      </div>
       {householdWorth && (
-        <NetWorthSinceStart
+        <NetWorthChart
           actual={[...householdWorth.backfill, ...householdWorth.actualDays]}
           plan={householdWorth.planDays}
           measuredFrom={householdWorth.measuredFrom ?? undefined}
+          format={money}
+          label="Household net worth"
         />
       )}
-      <div className="tiny muted" style={{ marginTop: 4 }}>
-        solid measured
-        {householdWorth && householdWorth.backfill.length > 0 ? ' · faint worked back from transactions' : ''} ·
-        dashed plan · household only
+      <div className="rule">
+        Everything the household owns less everything it owes; the business is on the
+        Business page. From {startedOn} it is read from the bank each day
+        {householdWorth && householdWorth.backfill.length > 0
+          ? '; before that it is worked back from transactions, with typed-in debts held at their first reading and loan payoffs counted as moving money rather than losing it'
+          : ''}
+        .
+      </div>
+    </div>
+  )
+
+  /** What the plan saves, as one of the three cards. It used to be the hero. */
+  const planSavesCard = (
+    <div className="stat">
+      <div className="tiny muted" style={{ fontWeight: 700, letterSpacing: '.05em' }}>
+        WHAT THE PLAN SAVES
+      </div>
+      <div className="tnum" style={{ fontSize: 22, fontWeight: 800, margin: '3px 0 1px', letterSpacing: '-.02em' }}>
+        {money(frozen.interestSaved)}
+      </div>
+      <div className="tiny muted">
+        in interest, and <b className="tnum">{frozen.monthsSaved} months</b>
+      </div>
+      <div className="tiny muted tnum" style={{ marginTop: 6 }}>
+        plan {moneyCents(frozen.planInterest)} · {frozen.planMonths} mo
+      </div>
+      <div className="tiny muted tnum">
+        minimums {moneyCents(frozen.minimumsInterest)} · {frozen.minimumsMonths} mo
+      </div>
+      <div className="tiny muted tnum">
+        saved so far {savedSoFar === null ? '—' : moneyCents(savedSoFar)}
+        {savedSoFar === null
+          ? ' (interest not readable)'
+          : elapsedMonths === 0
+            ? ` · first month closes ${dayMonth(frozen.plan[1]?.projected_on ?? frozen.version.effective_from)}`
+            : ` · ${elapsedMonths} completed month${elapsedMonths === 1 ? '' : 's'}`}
       </div>
     </div>
   )
@@ -469,50 +511,8 @@ export default function Progress() {
         </div>
       )}
 
-      {/* ---- the hero: what the plan saves ---- */}
-      <div className="hero" style={{ marginBottom: 16 }}>
-        <div className="hero__label">WHAT THE PLAN SAVES</div>
-        <div className="hero__figure" style={{ marginTop: 5 }}>
-          {money(frozen.interestSaved)}
-        </div>
-        <div className="sm hero__note" style={{ marginTop: 5 }}>
-          in interest, and{' '}
-          <b className="tnum" style={{ color: 'var(--on-fill)' }}>
-            {frozen.monthsSaved} months
-          </b>{' '}
-          of your life
-        </div>
-
-        <div className="hero__split">
-          <div>
-            <div className="tiny hero__note">The plan</div>
-            <div className="tnum" style={{ fontSize: 17, fontWeight: 700 }}>
-              {moneyCents(frozen.planInterest)}
-            </div>
-            <div className="tiny hero__note tnum">{frozen.planMonths} months</div>
-          </div>
-          <div>
-            <div className="tiny hero__note">Minimums only</div>
-            <div className="tnum hero__note" style={{ fontSize: 17, fontWeight: 700 }}>
-              {moneyCents(frozen.minimumsInterest)}
-            </div>
-            <div className="tiny hero__note tnum">{frozen.minimumsMonths} months</div>
-          </div>
-          <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-            <div className="tiny hero__note">Saved so far</div>
-            <div className="tnum" style={{ fontSize: 17, fontWeight: 700 }}>
-              {savedSoFar === null ? '—' : moneyCents(savedSoFar)}
-            </div>
-            <div className="tiny hero__note">
-              {savedSoFar === null
-                ? 'interest not readable'
-                : elapsedMonths === 0
-                  ? `first month closes ${dayMonth(frozen.plan[1]?.projected_on ?? frozen.version.effective_from)}`
-                  : `over ${elapsedMonths} completed month${elapsedMonths === 1 ? '' : 's'}`}
-            </div>
-          </div>
-        </div>
-      </div>
+      {/* ---- net worth, where the hero was ---- */}
+      {netWorthBox}
 
       {/* ---- the chart ---- */}
       <div className="box" style={{ marginBottom: 15 }}>
@@ -618,7 +618,7 @@ export default function Progress() {
           clearing order marks by weight rather than by colour. */}
       {wide ? (
         <div className="g3" style={{ marginBottom: 15 }}>
-          {netWorthCard}
+          {planSavesCard}
           {savingsCard}
           {targetCard}
         </div>
@@ -632,7 +632,7 @@ export default function Progress() {
               marginBottom: 10,
             }}
           >
-            {netWorthCard}
+            {planSavesCard}
             {savingsCard}
           </div>
           <div style={{ marginBottom: 15 }}>{targetCard}</div>

@@ -1,7 +1,7 @@
 import { useMemo, type ReactNode } from 'react'
 import BusinessBars, { type BarMonth } from '../components/BusinessBars'
 import TrendChart from '../components/TrendChart'
-import { NetWorthSinceStart } from '../components/ProgressChart'
+import { NetWorthChart } from '../components/ProgressChart'
 import { extendBackward, feedStart, useDailyNetPosition, useNetHistoryInputs } from '../lib/progressData'
 import { useBusinessMonths } from '../lib/businessMonths'
 import { useData, useNetWorth, type Account } from '../lib/data'
@@ -453,10 +453,12 @@ export default function Business() {
                 : ''}
             </div>
             {netPosition.points.length > 1 ? (
-              <NetWorthSinceStart
+              <NetWorthChart
                 actual={[...backfill, ...netPosition.points]}
                 plan={[]}
                 measuredFrom={netPosition.points[0]?.date}
+                format={money}
+                label="Business net position"
               />
             ) : (
               <div className="tiny muted" style={{ marginTop: 4 }}>
