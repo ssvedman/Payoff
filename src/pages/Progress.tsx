@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import ProgressChart, { ProgressSparkline } from '../components/ProgressChart'
+import ProgressChart, { NetWorthSinceStart } from '../components/ProgressChart'
 import ProgressClearingOrder, {
   useWideScreen,
   type ClearingGroup,
@@ -13,6 +13,7 @@ import {
   type PlanProjectionsState,
 } from '../lib/planVersion'
 import {
+  buildDailySeries,
   completedPlanMonths,
   monthsBetween,
   useProgressData,
@@ -73,7 +74,7 @@ function monthYear(iso: string): string {
 }
 
 export default function Progress() {
-  const { debts, plan: planSettings, loading } = useData()
+  const { accounts, debts, plan: planSettings, loading } = useData()
   const payoff = usePayoffPlan()
   const netWorthNow = useNetWorth()
   const planState = useFrozenPlan()
@@ -108,6 +109,7 @@ export default function Progress() {
     actual,
     provenance,
     interest,
+    measured,
   } = useProgressData(
     debts,
     frozen?.version.effective_from ?? planSettings?.plan_started_on ?? null,
@@ -182,6 +184,81 @@ export default function Progress() {
     })
   }, [frozen, debts, payoff])
 
+  /**
+   * HOUSEHOLD net worth, measured day by day since the plan began, beside the
+   * plan's figure for the same days.
+   *
+   * The business is left out on both sides — its cash and its cards — because
+   * its balance swings by thousands as clients pay and crew are paid, and that
+   * noise read as the household getting richer or poorer. It is reported on the
+   * Business page instead.
+   *
+   * The stored plan line counts the business (its month 0 is exactly the
+   * household plus the business on 15 September). So the plan is moved by the
+   * business's measured position ON THE START DATE, a constant, which puts both
+   * lines on the same footing on day one without editing a single stored row.
+   * Vehicles are held at today's valuation, as the plan holds them.
+   */
+  const householdWorth = useMemo(() => {
+    if (!frozen) return null
+    const from = frozen.version.effective_from
+    const isCash = (a: { kind: string }) => a.kind === 'checking' || a.kind === 'savings'
+    const signsFor = (business: boolean) =>
+      new Map<string, 1 | -1>(
+        accounts.filter((a) => a.is_business === business).map((a) => [a.id, isCash(a) ? 1 : -1]),
+      )
+
+    const assets = netWorthNow.assetsTotal
+    const actualDays = buildDailySeries(measured, signsFor(false), from).map((p) => ({
+      date: p.date,
+      total: round2(p.total + assets),
+    }))
+    const businessDays = buildDailySeries(measured, signsFor(true), from)
+    const businessAtStart = businessDays.find((p) => p.date === from)?.total ?? null
+
+    const planRows = frozen.plan.filter((r) => r.projected_net_worth !== null)
+    const planOn = (iso: string): number | null => {
+      // Linear between the stored months: the plan says nothing finer.
+      const t = Date.parse(`${iso}T12:00:00Z`)
+      for (let i = 0; i < planRows.length - 1; i++) {
+        const a = planRows[i]
+        const b = planRows[i + 1]
+        const ta = Date.parse(`${a.projected_on}T12:00:00Z`)
+        const tb = Date.parse(`${b.projected_on}T12:00:00Z`)
+        if (t >= ta && t <= tb) {
+          const f = tb > ta ? (t - ta) / (tb - ta) : 0
+          return (a.projected_net_worth as number) + f * ((b.projected_net_worth as number) - (a.projected_net_worth as number))
+        }
+      }
+      return null
+    }
+
+    const planDays =
+      businessAtStart === null
+        ? []
+        : actualDays
+            .map((p) => {
+              const v = planOn(p.date)
+              return v === null ? null : { date: p.date, total: round2(v - businessAtStart) }
+            })
+            .filter((p): p is { date: string; total: number } => p !== null)
+
+    const businessIds = new Set(accounts.filter((a) => a.is_business).map((a) => a.id))
+    const businessNow = accounts
+      .filter((a) => businessIds.has(a.id))
+      .reduce((s, a) => s + (isCash(a) ? a.balance : -Math.max(0, a.balance)), 0)
+
+    const first = actualDays[0] ?? null
+    const lastPlan = planDays[planDays.length - 1] ?? null
+    return {
+      now: round2(netWorthNow.netWorth - businessNow),
+      actualDays,
+      planDays: planDays.length === actualDays.length ? planDays : [],
+      changeSinceStart: first ? round2(netWorthNow.netWorth - businessNow - first.total) : null,
+      planChange: first && lastPlan ? round2(lastPlan.total - first.total) : null,
+    }
+  }, [frozen, accounts, measured, netWorthNow])
+
   if (loading || extrasLoading || planState.status === 'loading') return <ProgressSkeleton />
 
   if (!frozen) {
@@ -229,11 +306,6 @@ export default function Progress() {
       ? (frozen.milestones.find((m) => m.names.includes(target.name)) ?? null)
       : null
 
-  /** Net worth by month under the plan. Nulls are months the generator left blank. */
-  const netWorthLine = frozen.plan
-    .map((p) => p.projected_net_worth)
-    .filter((v): v is number => v !== null)
-
   const savingsNow = payoff?.savingsBalance ?? 0
   const depositTarget = frozen.version.deposit_target
   const savingsPct =
@@ -263,19 +335,28 @@ export default function Progress() {
         className="tnum"
         style={{ fontSize: 22, fontWeight: 800, margin: '3px 0 1px', letterSpacing: '-.02em' }}
       >
-        {money(netWorthNow.netWorth)}
+        {money(householdWorth?.now ?? netWorthNow.netWorth)}
       </div>
       {/*
-        Everything owned less everything owed. The figure that goes UP: debt
-        falling is the same story told from the only angle where the best
-        possible outcome is an empty chart, and this one has somewhere to go.
+        Everything the household owns less everything it owes. The figure that
+        goes UP: debt falling is the same story told from the only angle where
+        the best possible outcome is an empty chart. Household only — the
+        business is on its own page.
       */}
       <div className="tiny muted tnum">
-        {netWorthLine.length > 1
-          ? `plan reaches ${money(netWorthLine[netWorthLine.length - 1])} by ${monthYear(frozen.debtFreeOn)}`
-          : 'everything owned, less everything owed'}
+        {householdWorth?.changeSinceStart != null
+          ? `${householdWorth.changeSinceStart >= 0 ? '+' : '−'}${money(Math.abs(householdWorth.changeSinceStart))} since ${startedOn}` +
+            (householdWorth.planChange != null
+              ? ` · plan ${householdWorth.planChange >= 0 ? '+' : '−'}${money(Math.abs(householdWorth.planChange))}`
+              : '')
+          : 'household, excluding the business'}
       </div>
-      <ProgressSparkline values={netWorthLine} />
+      {householdWorth && (
+        <NetWorthSinceStart actual={householdWorth.actualDays} plan={householdWorth.planDays} />
+      )}
+      <div className="tiny muted" style={{ marginTop: 4 }}>
+        solid measured · dashed plan · household only
+      </div>
     </div>
   )
 

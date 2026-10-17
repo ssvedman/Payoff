@@ -1,6 +1,8 @@
 import { useMemo, type ReactNode } from 'react'
 import BusinessBars, { type BarMonth } from '../components/BusinessBars'
 import TrendChart from '../components/TrendChart'
+import { NetWorthSinceStart } from '../components/ProgressChart'
+import { useDailyNetPosition } from '../lib/progressData'
 import { useBusinessMonths } from '../lib/businessMonths'
 import { useData, useNetWorth, type Account } from '../lib/data'
 import {
@@ -183,6 +185,16 @@ export default function Business() {
   const cashAsOf = cash.map((a) => a.balanceAsOf).filter(Boolean).sort().pop() ?? null
 
   const title = useMemo(() => businessTitle(businessAccounts), [businessAccounts])
+
+  /**
+   * What the business is worth on its own: its cash less its cards, measured
+   * day by day. Kept here rather than on Progress, whose net worth is the
+   * household's; this balance swings by thousands as clients pay and crew are
+   * paid, and on the household line that read as the family getting richer.
+   */
+  const netPosition = useDailyNetPosition(
+    useMemo(() => businessAccounts.filter((a) => a.kind !== 'loan' && a.kind !== 'tax'), [businessAccounts]),
+  )
 
   /**
    * The month the stat cards and both breakdown boxes report.
@@ -394,6 +406,45 @@ export default function Business() {
           places, not two debts.
         </div>
       )}
+
+      {/* ---------------------------------------------------------------- */}
+      {/* Net position: cash less the business cards                        */}
+      {/* ---------------------------------------------------------------- */}
+      {(() => {
+        const net = cashTotal - cardTotal
+        const first = netPosition.points[0] ?? null
+        const change = first ? net - first.total : null
+        return (
+          <div className="stat" style={{ marginBottom: 15 }}>
+            <div className="caps">NET POSITION</div>
+            <div className="tnum" style={{ fontSize: 20, fontWeight: 800, marginTop: 2 }}>
+              {net < 0 ? '−' : ''}
+              {money(Math.abs(net))}
+            </div>
+            <div className="tiny muted tnum">
+              {moneyCents(cashTotal)} cash less {moneyCents(cardTotal)} on the business card
+              {cards.length === 1 ? '' : 's'}
+              {first && change !== null
+                ? ` · ${change >= 0 ? '+' : '−'}${money(Math.abs(change))} since ${parseDateOnly(first.date).toLocaleDateString('en-US', { day: 'numeric', month: 'short' })}`
+                : ''}
+            </div>
+            {netPosition.points.length > 1 ? (
+              <NetWorthSinceStart actual={netPosition.points} plan={[]} />
+            ) : (
+              <div className="tiny muted" style={{ marginTop: 4 }}>
+                {netPosition.loading
+                  ? 'Loading readings…'
+                  : netPosition.error
+                    ? `Readings could not be loaded: ${netPosition.error}`
+                    : 'Not enough readings yet to draw a line.'}
+              </div>
+            )}
+            <div className="tiny muted" style={{ marginTop: 4 }}>
+              Measured from the bank's daily readings. Not part of the household net worth on Progress.
+            </div>
+          </div>
+        )
+      })()}
 
       {/* ---------------------------------------------------------------- */}
       {/* In and out, by month                                              */}

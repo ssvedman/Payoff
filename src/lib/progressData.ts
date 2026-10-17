@@ -22,7 +22,7 @@ import type { SnapshotSource } from './database.types'
 const num = (v: unknown): number => (typeof v === 'number' ? v : Number(v ?? 0))
 
 /** Snapshot rows as we actually need them. */
-interface SnapshotRow {
+export interface SnapshotRow {
   account_id: string
   balance: number | string | null
   as_of: string
@@ -178,6 +178,67 @@ export function buildActualSeries(
   return points
 }
 
+/** One day of a measured net position. */
+export interface DailyPoint {
+  /** YYYY-MM-DD. */
+  date: string
+  total: number
+}
+
+/**
+ * A net position, day by day, from measured readings only.
+ *
+ * `signs` says which accounts count and which way: +1 for money held, -1 for
+ * money owed. Per account the latest reading on or before each day is carried
+ * forward — the same rule as buildActualSeries, at a day's grain rather than a
+ * month's, because a month's grain gives a plan one month old exactly two
+ * points and calls that a line.
+ *
+ * An account never read is left out rather than counted as zero; the series
+ * starts on the first day every account that IS read has a reading, so the line
+ * cannot jump the day a late account first reports.
+ */
+export function buildDailySeries(
+  rows: SnapshotRow[],
+  signs: Map<string, 1 | -1>,
+  fromIso: string,
+  today = new Date(),
+): DailyPoint[] {
+  const mine = rows
+    .filter((r) => signs.has(r.account_id) && isMeasured(r.source))
+    .sort((a, b) => a.as_of.localeCompare(b.as_of) || a.created_at.localeCompare(b.created_at))
+  if (mine.length === 0) return []
+
+  const readIds = new Set(mine.map((r) => r.account_id))
+  const todayIso = `${monthKeyOfDate(today)}-${String(today.getDate()).padStart(2, '0')}`
+  const latest = new Map<string, number>()
+  const out: DailyPoint[] = []
+
+  let cursor = 0
+  // Walk calendar days by their parts at noon UTC, so no timezone or DST can
+  // skip or repeat one.
+  const start = mine[0].as_of < fromIso ? fromIso : mine[0].as_of
+  for (
+    let d = new Date(`${mine[0].as_of}T12:00:00Z`);
+    ;
+    d.setUTCDate(d.getUTCDate() + 1)
+  ) {
+    const iso = d.toISOString().slice(0, 10)
+    if (iso > todayIso) break
+    while (cursor < mine.length && mine[cursor].as_of <= iso) {
+      latest.set(mine[cursor].account_id, num(mine[cursor].balance))
+      cursor++
+    }
+    if (iso < start || latest.size < readIds.size) continue
+
+    let total = 0
+    for (const [id, v] of latest) total += (signs.get(id) as number) * v
+    out.push({ date: iso, total: round2(total) })
+  }
+
+  return out
+}
+
 /** Everything the provenance note states, computed from the same rows. */
 export function describeSnapshots(
   rows: SnapshotRow[],
@@ -219,6 +280,8 @@ interface ProgressData {
   actualCash: ActualPoint[]
   provenance: SnapshotProvenance | null
   interest: ObservedInterest | null
+  /** Every measured reading, for series this module does not build itself. */
+  measured: SnapshotRow[]
 }
 
 /**
@@ -393,6 +456,7 @@ export function useProgressData(
         actualCash: [],
         provenance: null,
         interest: null,
+        measured: [],
       }
     }
 
@@ -422,6 +486,7 @@ export function useProgressData(
       actualSavings: buildActualSeries(rows, new Set(savingsKey ? savingsKey.split(',') : [])),
       actualCash: buildActualSeries(rows, new Set(cashKey ? cashKey.split(',') : [])),
       provenance: describeSnapshots(rows, debts, Math.max(0, totalSnapshots - rows.length)),
+      measured: rows,
       // null, not a zeroed-out object: the page has to be able to tell "no
       // interest was charged" from "we could not find out".
       interest: interestFailed ? null : {
@@ -445,4 +510,67 @@ export function useProgressData(
     cashKey,
     savingsKey,
   ])
+}
+
+/**
+ * A net position over a few accounts, day by day, measured readings only.
+ *
+ * For the Business page, which needs one small series and none of the rest of
+ * the Progress data: cash counts up, anything else counts as owed. Paged for
+ * the same reason fetchMeasuredSnapshots is.
+ */
+export function useDailyNetPosition(accounts: Account[], fromIso: string | null = null) {
+  const key = useMemo(() => accounts.map((a) => `${a.id}:${a.kind}`).sort().join(','), [accounts])
+  const [state, setState] = useState<{ loading: boolean; error: string | null; points: DailyPoint[] }>({
+    loading: true,
+    error: null,
+    points: [],
+  })
+
+  useEffect(() => {
+    let active = true
+    const entries = key ? key.split(',').map((e) => e.split(':') as [string, string]) : []
+    const signs = new Map<string, 1 | -1>(
+      entries.map(([id, kind]) => [id, kind === 'checking' || kind === 'savings' ? 1 : -1]),
+    )
+    if (signs.size === 0) {
+      setState({ loading: false, error: null, points: [] })
+      return
+    }
+
+    void (async () => {
+      const all: SnapshotRow[] = []
+      let error: string | null = null
+      for (let from = 0; ; from += PAGE) {
+        const res = await supabase
+          .from('balance_snapshots')
+          .select('account_id, balance, as_of, created_at, source')
+          .in('source', MEASURED_SOURCES)
+          .in('account_id', [...signs.keys()])
+          .order('as_of')
+          .order('created_at')
+          .order('account_id')
+          .range(from, from + PAGE - 1)
+        if (res.error) {
+          error = res.error.message
+          break
+        }
+        const rows = (res.data ?? []) as unknown as SnapshotRow[]
+        all.push(...rows)
+        if (rows.length < PAGE) break
+      }
+      if (!active) return
+      setState({
+        loading: false,
+        error,
+        points: buildDailySeries(all, signs, fromIso ?? '0000-00-00'),
+      })
+    })()
+
+    return () => {
+      active = false
+    }
+  }, [key, fromIso])
+
+  return state
 }

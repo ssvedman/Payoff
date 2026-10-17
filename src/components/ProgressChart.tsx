@@ -609,3 +609,78 @@ export function ProgressSparkline({
     </svg>
   )
 }
+
+/**
+ * Net worth since the plan began: what was measured, beside what the plan said.
+ *
+ * The card used to draw the plan's forecast alone, a near-straight line from
+ * the first month to the last, under today's measured figure — so the only
+ * line on it was the one thing on the card that had not happened. This draws
+ * the measured line, solid, over exactly the days there are readings for, and
+ * the plan dashed across the same days on the same scale. Two lines that share
+ * a y axis can be compared by eye; a line and a number cannot.
+ *
+ * Same visual rules as the main chart: measured is solid ink, a projection is
+ * the same ink dashed. No amber.
+ */
+export function NetWorthSinceStart({
+  actual,
+  plan,
+  height = 46,
+}: {
+  actual: { date: string; total: number }[]
+  /** The plan's figure on each of the same dates. */
+  plan: { date: string; total: number }[]
+  height?: number
+}) {
+  if (actual.length < 2) return null
+
+  const W = 200
+  const H = height
+  const pad = 3
+  const values = [...actual.map((p) => p.total), ...plan.map((p) => p.total)]
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const span = Math.max(max - min, 1)
+  const n = actual.length
+
+  const path = (pts: { total: number }[]) =>
+    pts
+      .map((p, i) => {
+        const x = pad + (i / (n - 1)) * (W - pad * 2)
+        const y = pad + (1 - (p.total - min) / span) * (H - pad * 2)
+        return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`
+      })
+      .join(' ')
+
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      width="100%"
+      height={H}
+      aria-hidden="true"
+      preserveAspectRatio="none"
+      style={{ display: 'block', marginTop: 7 }}
+    >
+      {plan.length === n && (
+        <path
+          d={path(plan)}
+          fill="none"
+          stroke={PLAN_COLOR}
+          strokeWidth="1.5"
+          strokeDasharray="5 4"
+          vectorEffect="non-scaling-stroke"
+          opacity={0.6}
+        />
+      )}
+      <path
+        d={path(actual)}
+        fill="none"
+        stroke={ACTUAL_COLOR}
+        strokeWidth="2.5"
+        strokeLinejoin="round"
+        vectorEffect="non-scaling-stroke"
+      />
+    </svg>
+  )
+}
