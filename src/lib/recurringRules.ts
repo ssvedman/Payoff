@@ -258,6 +258,19 @@ export function applyStatedDay(series: Series[], overrides: Override[], today: D
     // stated 31st has to land on the 30th in April rather than roll into May.
     if (isoDate(next) < todayIso) next = clampedDay(t.getFullYear(), t.getMonth() + 1, day)
 
-    return { ...s, dayOfMonth: day, nextOn: isoDate(next), statedDay: day }
+    // A stated day makes it MONTHLY, whatever detection made of the posting
+    // dates, and it is not late: the member has said when it falls, and that
+    // date has not come yet. Left as detected, a bill whose autopay posts on
+    // irregular days kept its "every 20 days" step and its late flag, and was
+    // projected for tomorrow while due on the 24th.
+    return {
+      ...s,
+      kind: 'monthly' as const,
+      dayOfMonth: day,
+      nextOn: isoDate(next),
+      statedDay: day,
+      overdue: false,
+      missedCycles: 0,
+    }
   })
 }

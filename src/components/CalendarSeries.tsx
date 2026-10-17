@@ -186,7 +186,11 @@ function Controls({
       {/* The observed day is when the money POSTED, which for a bill paid on the
           1st is several days later. Only the person paying it knows the due
           date, so it can be stated — and it is labelled as stated. */}
-      {s.kind === 'monthly' &&
+      {/* Offered on any recurring outgoing, not only one detection already
+          calls monthly: a bill paid on irregular days (autopay that posts
+          anywhere from the 8th to the 27th) reads as "every 20 days" and then
+          "late", and stating its day is exactly how that gets corrected. */}
+      {(s.kind === 'monthly' || (s.direction === 'out' && s.kind !== 'once')) &&
         (editingDay ? (
           <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
             due on the
@@ -226,7 +230,11 @@ function Controls({
           </span>
         ) : (
           <button type="button" onClick={() => setEditingDay(true)} style={linkButton(false)}>
-            {s.statedDay ? `due on the ${ordinalDay(s.statedDay)} (entered)` : 'set the day it is due'}
+            {s.statedDay
+              ? `due on the ${ordinalDay(s.statedDay)} (entered)`
+              : s.kind === 'monthly'
+                ? 'set the day it is due'
+                : 'monthly? set the day it is due'}
           </button>
         ))}
 
