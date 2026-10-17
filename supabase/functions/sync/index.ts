@@ -610,11 +610,14 @@ Deno.serve(async (req: Request) => {
       if (incoming.length) {
         // A manual override is never recomputed, so read what we already hold.
         const ids = incoming.map((t) => t.transaction_id)
-        const existing = new Map<string, { bucket: string; bucket_source: string; budget_line_id: string | null }>()
+        const existing = new Map<
+          string,
+          { bucket: string; bucket_source: string; budget_line_id: string | null; account_id: string }
+        >()
         for (let i = 0; i < ids.length; i += 200) {
           const { data, error } = await admin
             .from('transactions')
-            .select('plaid_transaction_id, bucket, bucket_source, budget_line_id')
+            .select('plaid_transaction_id, bucket, bucket_source, budget_line_id, account_id')
             .in('plaid_transaction_id', ids.slice(i, i + 200))
           // Swallowing this would make every manual override look absent and get
           // silently recomputed — "a manual override is never recomputed" is a
@@ -625,6 +628,7 @@ Deno.serve(async (req: Request) => {
               bucket: row.bucket as string,
               bucket_source: row.bucket_source as string,
               budget_line_id: (row.budget_line_id as string | null) ?? null,
+              account_id: row.account_id as string,
             })
           }
         }
@@ -666,7 +670,11 @@ Deno.serve(async (req: Request) => {
 
           return {
             plaid_transaction_id: t.transaction_id,
-            account_id: acct.id,
+            // A hand-filed row keeps the account it was filed under too: a
+            // business purchase made on a personal card is moved to the
+            // business's account by hand, and Plaid re-sending the row must not
+            // put it back.
+            account_id: prior?.bucket_source === 'manual' ? prior.account_id : acct.id,
             posted_on: t.date,
             name: t.name,
             merchant_name: t.merchant_name,
