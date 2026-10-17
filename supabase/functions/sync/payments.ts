@@ -15,9 +15,11 @@
  *     as a payment — Plaid's payment or transfer-in category, or a payment word
  *     in the descriptor. The categories alone are not enough: issuers file
  *     "Payment Thank You" under INCOME_CONTRACTOR and LOAN_DISBURSEMENTS.
- *   - A manual debt: money out of a household account whose descriptor names
- *     the debt or one of its payment_aliases. A descriptor naming two manual
- *     debts proves neither and is skipped.
+ *   - A manual debt, or a connected one with payment_aliases: money out of any
+ *     of our own accounts whose descriptor names the debt or one of its aliases.
+ *     A descriptor naming two such debts proves neither and is skipped. The
+ *     business account counts as a payer here: a tax instalment drawn from it
+ *     still pays the bill. This records a date only and counts no money.
  *
  * Pending rows are left out: a pending payment can still vanish, and a paid
  * claim that later turns false is worse than a late one that clears a day on.
@@ -73,13 +75,17 @@ export async function recordLastPayments(
   const sinceIso = since.toISOString().slice(0, 10)
 
   const debts = accounts.filter((a) => isDebtKind(a.kind))
-  const householdIds = accounts.filter((a) => !isDebtKind(a.kind) && !a.is_business).map((a) => a.id)
-  const manualDebts = debts.filter((d) => d.is_manual || !d.plaid_account_id)
+  const payerIds = accounts.filter((a) => !isDebtKind(a.kind)).map((a) => a.id)
+  const isManual = (d: DebtForPayments) => d.is_manual || !d.plaid_account_id
+  /** Debts matched by descriptor: manual ones, and connected ones given aliases. */
+  const byAlias = debts.filter((d) => isManual(d) || (d.payment_aliases ?? []).length > 0)
+  const aliasNamesOf = (d: DebtForPayments) =>
+    isManual(d) ? namesOf(d) : namesOf({ ...d, name: '' })
 
   for (const debt of debts) {
-    let found: { posted_on: string; amount: number }[] = []
+    const found: { posted_on: string; amount: number }[] = []
 
-    if (debt.plaid_account_id && !debt.is_manual) {
+    if (!isManual(debt)) {
       const { data, error } = await admin
         .from('transactions')
         .select('posted_on, amount, name, plaid_category')
@@ -91,20 +97,23 @@ export async function recordLastPayments(
         errors.push(`last payment unread for ${debt.name}: ${error.message}`)
         continue
       }
-      found = (data ?? [])
-        .filter((t: { name: string; plaid_category: string | null }) => isPaymentCredit(t.name, t.plaid_category))
-        .map((t: { posted_on: string; amount: number | string }) => ({ posted_on: t.posted_on, amount: -Number(t.amount) }))
-    } else {
-      const mine = namesOf(debt)
-      if (!mine.length || !householdIds.length) continue
-      const others = manualDebts.filter((d) => d.id !== debt.id).flatMap(namesOf)
+      found.push(
+        ...(data ?? [])
+          .filter((t: { name: string; plaid_category: string | null }) => isPaymentCredit(t.name, t.plaid_category))
+          .map((t: { posted_on: string; amount: number | string }) => ({ posted_on: t.posted_on, amount: -Number(t.amount) })),
+      )
+    }
+
+    const mine = byAlias.includes(debt) ? aliasNamesOf(debt) : []
+    if (mine.length && payerIds.length) {
+      const others = byAlias.filter((d) => d.id !== debt.id).flatMap(aliasNamesOf)
       const rows = new Map<string, { posted_on: string; amount: number; name: string }>()
 
       for (const n of mine) {
         const { data, error } = await admin
           .from('transactions')
           .select('id, posted_on, amount, name')
-          .in('account_id', householdIds)
+          .in('account_id', payerIds)
           .eq('pending', false)
           .gt('amount', 0)
           .gte('posted_on', sinceIso)
@@ -116,12 +125,14 @@ export async function recordLastPayments(
         for (const t of data ?? []) rows.set(String(t.id), t)
       }
 
-      found = [...rows.values()]
-        .filter((t) => {
-          const hay = String(t.name ?? '').toLowerCase()
-          return !others.some((o) => hay.includes(o))
-        })
-        .map((t) => ({ posted_on: t.posted_on, amount: Number(t.amount) }))
+      found.push(
+        ...[...rows.values()]
+          .filter((t) => {
+            const hay = String(t.name ?? '').toLowerCase()
+            return !others.some((o) => hay.includes(o))
+          })
+          .map((t) => ({ posted_on: t.posted_on, amount: Number(t.amount) })),
+      )
     }
 
     if (!found.length) continue
