@@ -21,6 +21,7 @@ import {
   PlaidError,
   type PlaidAccount,
 } from './plaid.ts'
+import { recordLastPayments } from './payments.ts'
 import { categorize, matchRule as matchedRule, ruleApplies, type Bucket, type RuleLike } from './categorize.ts'
 
 // SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are injected by the platform.
@@ -64,6 +65,7 @@ interface AccountRow {
   mask: string | null
   /** Statement descriptors that stand in for this account's name. */
   payment_aliases: string[] | null
+  last_payment_on: string | null
 }
 
 /**
@@ -168,6 +170,7 @@ Deno.serve(async (req: Request) => {
     transactionsUpserted: 0,
     transactionsRemoved: 0,
     liabilitiesUpdated: 0,
+    lastPayments: [] as string[],
     cleared: [] as string[],
     reopened: [] as string[],
     target: null as string | null,
@@ -537,9 +540,16 @@ Deno.serve(async (req: Request) => {
           // no due date" — so, as with the rate, never write a null over a value
           // that is already known.
           if (credit.next_payment_due_date) patch.next_due_on = credit.next_payment_due_date
-          if (credit.last_payment_date) patch.last_payment_on = credit.last_payment_date
-          if (typeof credit.last_payment_amount === 'number') {
-            patch.last_payment_amount = credit.last_payment_amount
+          // Forward only. The issuer's date lags the feed, and recordLastPayments
+          // may already hold a newer payment; an older one must not undo it.
+          if (
+            credit.last_payment_date &&
+            (!acct.last_payment_on || credit.last_payment_date >= acct.last_payment_on)
+          ) {
+            patch.last_payment_on = credit.last_payment_date
+            if (typeof credit.last_payment_amount === 'number') {
+              patch.last_payment_amount = credit.last_payment_amount
+            }
           }
           if (typeof credit.last_statement_balance === 'number') {
             patch.last_statement_balance = credit.last_statement_balance
@@ -553,6 +563,7 @@ Deno.serve(async (req: Request) => {
               report.errors.push(`liability write failed for ${acct.name}: ${liabErr.message}`)
             } else {
               report.liabilitiesUpdated++
+              if (patch.last_payment_on) acct.last_payment_on = patch.last_payment_on as string
             }
           }
         }
@@ -725,6 +736,16 @@ Deno.serve(async (req: Request) => {
     } catch (err) {
       await handleItemError(item, itemReport, err)
     }
+  }
+
+  // After the transactions are in, so a payment that arrived tonight counts
+  // tonight. Database only: no Plaid call, so light runs do it too.
+  try {
+    const paid = await recordLastPayments(admin, accounts, isDebtKind, asOf)
+    report.lastPayments = paid.updated
+    report.errors.push(...paid.errors)
+  } catch (err) {
+    report.errors.push(`last payments skipped: ${(err as Error).message}`)
   }
 
   if (leased.length) {
