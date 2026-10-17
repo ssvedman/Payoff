@@ -128,6 +128,15 @@ export interface Series {
   /** account_id | descriptor | direction. Stable across reloads. */
   key: string
   accountId: string
+  /**
+   * Every account this series' payments have actually come out of (or into).
+   *
+   * One entry for an ordinary series; more once mergeRoutes() folds an
+   * obligation paid by alternating routes into one. `accountId` is only the
+   * route used MOST RECENTLY, which is a fine thing to put on a label and a
+   * dangerous thing to decide arithmetic with — see the callers.
+   */
+  routeAccountIds: string[]
   direction: Direction
   /** What to call it on screen, cleaned of trace numbers. */
   label: string
@@ -622,6 +631,7 @@ function mergeRoutes(
     string,
     {
       accountId: string
+      routeAccounts: Set<string>
       direction: Direction
       names: string[]
       merchant: string | null
@@ -681,6 +691,7 @@ function mergeRoutes(
 
     const merged = {
       accountId: newest.g.accountId,
+      routeAccounts: new Set<string>(),
       direction: newest.g.direction,
       names: same.flatMap((x) => x.g.names),
       merchant: newest.g.merchant,
@@ -688,6 +699,7 @@ function mergeRoutes(
       budgetLines: new Map<string, number>(),
     }
     for (const x of same) {
+      for (const a of x.g.routeAccounts) merged.routeAccounts.add(a)
       for (const [d, amt] of x.g.byDay) {
         merged.byDay.set(d, (merged.byDay.get(d) ?? 0) + amt)
       }
@@ -713,6 +725,8 @@ export function detectSeries(events: CadenceEvent[], opts: DetectOptions): Serie
     string,
     {
       accountId: string
+      /** Every account this group's rows sat on. One, until mergeRoutes() folds. */
+      routeAccounts: Set<string>
       direction: Direction
       names: string[]
       merchant: string | null
@@ -741,6 +755,7 @@ export function detectSeries(events: CadenceEvent[], opts: DetectOptions): Serie
     if (!g) {
       g = {
         accountId: e.account_id,
+        routeAccounts: new Set([e.account_id]),
         direction,
         names: [],
         merchant: e.merchant_name?.trim() || null,
@@ -780,6 +795,7 @@ export function detectSeries(events: CadenceEvent[], opts: DetectOptions): Serie
     const base = {
       key,
       accountId: g.accountId,
+      routeAccountIds: [...g.routeAccounts],
       direction: g.direction,
       label,
       descriptor: key.startsWith('line:') ? key.slice(5) : key.split('|')[1],

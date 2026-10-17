@@ -475,8 +475,13 @@ function GridRule({ model }: { model: ReturnType<typeof useCalendar> }) {
       that has no regular pattern is listed below rather than dated here. The
       projected balance runs across household checking only — savings and the
       PayPal wallet appear on the grid but are not counted in it, and neither is
-      any business account. Day-to-day variable spending is not counted at all,
-      because there is no figure for it that would not be invented.
+      any business account. An obligation that alternates between checking and
+      savings is the exception and is counted, because the months it comes out
+      of checking are real and leaving it out would understate what is leaving.
+      Outgoings already paid this month are shown ticked, on the day they went,
+      and are in the month's total but not in the balance ahead — that money has
+      gone. Day-to-day variable spending is not counted at all, because there is
+      no figure for it that would not be invented.
       {model.monthDue > 0 && (
         <>
           {' '}

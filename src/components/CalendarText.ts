@@ -69,6 +69,12 @@ export interface CalendarEvent {
   outsideBalance: boolean
   /** Late against its own cycle. */
   overdue: boolean
+  /**
+   * Already happened — an observed charge on its own day, not a projection.
+   * Drawn quieter and ticked, so a month reads as what it holds rather than
+   * only what is left of it.
+   */
+  posted: boolean
   /** The row's sub-line. Null when there is nothing worth adding. */
   note: string | null
 }
@@ -99,6 +105,9 @@ export function eventsOf(cell: DayCell, targetId: string | null): CalendarEvent[
       isTarget: targetId !== null && p.accountId === targetId,
       outsideBalance: false,
       overdue: false,
+      // A due date is a date, not an observation. Whether the payment was
+      // actually made is not in this row, so it never claims it was.
+      posted: false,
       note: p.rolledForward
         ? `${source} · rolled on a month, the stated cycle is already paid`
         : source,
@@ -107,6 +116,9 @@ export function eventsOf(cell: DayCell, targetId: string | null): CalendarEvent[
 
   cell.expected.forEach((f, i) => {
     const marks: string[] = [f.accountLabel]
+    // First, because it changes what the row IS. The rest of the marks describe
+    // a projection, and this one says the money has already moved.
+    if (f.posted) marks.push('paid — already out of the balance')
     if (!f.inBalance) marks.push('outside the checking total')
     // The asymmetry is stated on every row that carries it: late money in is
     // dropped from the running balance, late money out is still counted, because
@@ -121,6 +133,7 @@ export function eventsOf(cell: DayCell, targetId: string | null): CalendarEvent[
       isTarget: false,
       outsideBalance: !f.inBalance,
       overdue: f.overdue,
+      posted: f.posted,
       note: marks.filter(Boolean).join(' · ') || null,
     })
   })

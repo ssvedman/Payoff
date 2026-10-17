@@ -192,6 +192,11 @@ function Cell({
     // Said in words as well as in colour: a red background is invisible to a
     // screen reader, and below zero is the single most important thing a cell
     // on this grid can be.
+    // The tick is not readable, so the count is said in words. Without it a
+    // screen reader hears four items on a day where three are already paid.
+    events.some((e) => e.posted)
+      ? `${events.filter((e) => e.posted).length} already paid`
+      : '',
     cell.negative ? 'projected below zero' : '',
     isLowest ? 'lowest projected balance this month' : '',
     hasTarget ? 'current target' : '',
@@ -283,13 +288,27 @@ function Cell({
 }
 
 function EventLine({ event }: { event: ReturnType<typeof eventsOf>[number] }) {
+  /**
+   * A tick, not a colour and not a strikethrough.
+   *
+   * Green is already income on this grid and red is already below zero, so
+   * neither is free to mean "done" as well. Struck-through text says a thing
+   * was cancelled, which is the opposite of what happened. The tick reads as
+   * settled at a glance, and the row still states its figure — a rent that has
+   * gone out is part of what the month cost, not a line to be discounted.
+   */
+  const tick = event.posted ? '\u2713\u00a0' : ''
+
   if (event.direction === 'in') {
     // Income carries its amount and not its name: the name is the payroll
     // descriptor, which is longer than the cell and less informative than the
     // figure. It is on the cell's title and in the fortnight list in full.
     return (
-      <span className="tiny tnum" style={{ color: 'var(--green)', whiteSpace: 'nowrap' }}>
-        +{money(event.amount ?? 0)}
+      <span
+        className="tiny tnum"
+        style={{ color: 'var(--green)', whiteSpace: 'nowrap', opacity: event.posted ? 0.65 : 1 }}
+      >
+        {tick}+{money(event.amount ?? 0)}
       </span>
     )
   }
@@ -303,9 +322,13 @@ function EventLine({ event }: { event: ReturnType<typeof eventsOf>[number] }) {
         textOverflow: 'ellipsis',
         color: event.isTarget ? 'var(--amber-tx)' : event.overdue ? 'var(--red-tx)' : 'var(--ink)',
         fontWeight: event.isTarget ? 700 : 400,
-        opacity: event.outsideBalance ? 0.6 : 1,
+        // Settled money and money outside the total are both quieter than what
+        // is still to come, for the same reason: neither is weight on the days
+        // ahead, which is what a reader is scanning this grid for.
+        opacity: event.outsideBalance || event.posted ? 0.6 : 1,
       }}
     >
+      {tick}
       {shortLabel(event.label)}{' '}
       <span className="tnum">
         {/* "Nothing known" must never render as "nothing due". */}

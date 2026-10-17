@@ -85,7 +85,10 @@ export default function CalendarFortnight({ cells, month, targetId, historyEmpty
       : (cells.find(
           (c) =>
             c.date > lowest.date &&
-            c.expected.some((f) => f.inBalance && f.direction === 'in' && !f.overdue),
+            // Money that has already landed is not what the wait is for: it is
+            // behind the tight day, not ahead of it, and is already in the
+            // figure that makes the day tight.
+            c.expected.some((f) => f.inBalance && f.direction === 'in' && !f.overdue && !f.posted),
         )?.date ?? null)
 
   const rows: ListRow[] = []

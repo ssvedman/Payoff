@@ -192,6 +192,9 @@ export function confirmedSeries(
       return {
         key: o.seriesKey,
         accountId: o.accountId ?? '',
+        // One route, because a hand-marked obligation is named against one
+        // account. Nothing was observed, so there is nothing else to list.
+        routeAccountIds: o.accountId ? [o.accountId] : [],
         direction: o.direction,
         label: o.label,
         descriptor: o.descriptor,

@@ -70,6 +70,12 @@ export interface ExpectedFlow {
   /** Counted in the running balance. False for savings and the PayPal wallet. */
   inBalance: boolean
   overdue: boolean
+  /**
+   * This one has already happened — it is an observed event replayed onto its
+   * own day, not a projection. Never counted in the running balance: the seed
+   * and the actuals replayed on top of it already contain it.
+   */
+  posted: boolean
 }
 
 export interface DayCell {
@@ -615,6 +621,38 @@ export function useCalendar(anchor: Date, now = new Date()): CalendarModel {
     // where the money is actually known and runs forward only.
     const projectFromIso = seedAsOf ?? todayIso
 
+    /**
+     * Does this series move HOUSEHOLD CHECKING, the balance the line is drawn of?
+     *
+     * `accountId` alone is the wrong test once mergeRoutes() has folded an
+     * obligation paid by alternating routes. The rent here is the case: it comes
+     * out of Chase checking some months and Shared savings others, and the merged
+     * series inherits whichever route paid LAST. Read off that, the largest
+     * outgoing in the month drops out of the projection entirely the moment a
+     * rent happens to be paid from savings — and reappears the next month. The
+     * one figure this page exists to protect should not swing on that.
+     *
+     * So the routes are read together, and the direction decides which way to
+     * resolve a disagreement — the same asymmetry the running balance applies to
+     * a late stream. Money OUT counts if ANY route touches checking, money IN
+     * only if EVERY route does. Neither half may be the one that flatters the
+     * position. A single-route series is unaffected either way.
+     */
+    const inBalanceFor = (s: Series): boolean => {
+      const routes = s.routeAccountIds.length > 0 ? s.routeAccountIds : [s.accountId]
+      return s.direction === 'out'
+        ? routes.some((id) => balanceIds.has(id))
+        : routes.every((id) => balanceIds.has(id))
+    }
+
+    /**
+     * The first of the CURRENT month — where this page starts showing a month,
+     * whether or not the day has passed. Shared by payments due and by the
+     * occurrences already posted, so the two halves of a month cannot disagree
+     * about how far back it runs.
+     */
+    const monthStartIso = isoDate(startOfMonth(todayMid))
+
     /** Expected flows, keyed by date, over the whole horizon. */
     const flowsByDate = new Map<string, ExpectedFlow[]>()
     const addFlow = (f: ExpectedFlow) => {
@@ -624,6 +662,38 @@ export function useCalendar(anchor: Date, now = new Date()): CalendarModel {
     }
 
     for (const s of countedSeries) {
+      const inBalance = inBalanceFor(s)
+
+      /**
+       * What has ALREADY gone out (or come in) this month, put back on its day.
+       *
+       * Payments due are drawn from the first of the current month, projections
+       * only from the next expected date — so a card payment made on the 3rd
+       * appeared and a rent paid on the 4th did not. On a page whose job is to
+       * say what a month holds, the same month has to be shown the same way from
+       * both sides, and "the row is not there" is indistinguishable from "it is
+       * not being tracked".
+       *
+       * These are OBSERVED events replayed at the amount that actually moved —
+       * never the median, and never projected backwards into a month with no
+       * charge in it. Nothing here is invented; it is what the window recorded.
+       */
+      for (const e of s.events) {
+        if (e.date < monthStartIso) continue
+        addFlow({
+          seriesKey: s.key,
+          accountId: s.accountId,
+          accountLabel: nameOf.get(s.accountId) ?? '',
+          label: s.label,
+          on: e.date,
+          amount: e.amount,
+          direction: s.direction,
+          inBalance,
+          overdue: false,
+          posted: true,
+        })
+      }
+
       // Every occurrence inside the horizon, not just the next one: a fortnightly
       // payroll lands twice in most months and six times across the horizon.
       let cursor = s.nextOn as string
@@ -637,8 +707,9 @@ export function useCalendar(anchor: Date, now = new Date()): CalendarModel {
           on: cursor,
           amount: s.medianAmount,
           direction: s.direction,
-          inBalance: balanceIds.has(s.accountId),
+          inBalance,
           overdue: s.overdue,
+          posted: false,
         })
         const next = stepFrom(cursor, s)
         if (!next || next <= cursor) break
@@ -653,7 +724,7 @@ export function useCalendar(anchor: Date, now = new Date()): CalendarModel {
     // Due dates are generated from the start of the CURRENT month, so the month
     // on screen shows the ones already past as well as the ones to come. They
     // carry no weight in the balance, which only runs forward from the seed.
-    const dueFromIso = isoDate(startOfMonth(todayMid))
+    const dueFromIso = monthStartIso
 
     for (const a of accounts) {
       if (a.kind === 'checking' || a.kind === 'savings') continue
@@ -721,6 +792,13 @@ export function useCalendar(anchor: Date, now = new Date()): CalendarModel {
 
       for (const f of flowsByDate.get(iso) ?? []) {
         if (!f.inBalance) continue
+        /**
+         * Already happened, so already inside the figure being walked forward:
+         * the seed, plus every row replayed on top of it. Subtracting it again
+         * would charge this month's rent twice over and manufacture exactly the
+         * shortfall this page exists to find.
+         */
+        if (f.posted) continue
         /**
          * A LATE stream is treated the way that cannot flatter the position.
          *
@@ -790,7 +868,9 @@ export function useCalendar(anchor: Date, now = new Date()): CalendarModel {
             horizonDays
               .filter(([iso]) => iso > firstNegEntry[0])
               .find(([iso]) =>
-                (flowsByDate.get(iso) ?? []).some((f) => f.inBalance && f.direction === 'in' && !f.overdue),
+                (flowsByDate.get(iso) ?? []).some(
+                  (f) => f.inBalance && f.direction === 'in' && !f.overdue && !f.posted,
+                ),
               )?.[0] ?? null,
         }
       : null
@@ -804,9 +884,20 @@ export function useCalendar(anchor: Date, now = new Date()): CalendarModel {
     for (const c of monthCells) {
       for (const p of c.due) monthDue += p.amount ?? 0
       for (const f of c.expected) {
-        // The same rule the running balance applies, so the three headline
-        // figures and the line they sit under cannot disagree.
+        // Outside the checking total is outside every figure drawn from it —
+        // the same rule the running balance applies, so the headline and the
+        // line beneath it cannot disagree about what counts as household cash.
         if (!f.inBalance) continue
+        /**
+         * An occurrence already posted IS counted here, and is not counted in
+         * the running balance. That is not a contradiction: these are answers
+         * to two different questions. The balance says where the money will sit
+         * from the seed forward, and replaying a charge it already contains
+         * would subtract it twice. This says what the MONTH holds — which is
+         * what payments due have always said, counted from the first whether
+         * the day has passed or not. A month whose rent is paid has still spent
+         * its rent.
+         */
         if (f.direction === 'in') {
           if (f.overdue) continue
           monthIn += f.amount
