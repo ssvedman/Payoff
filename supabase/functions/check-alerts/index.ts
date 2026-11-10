@@ -218,6 +218,8 @@ Deno.serve(async (req: Request) => {
       ...a,
       balance: b ? Number(b.balance) : Number(a.opening_balance),
       prev: b && b.prev_balance !== null ? Number(b.prev_balance) : null,
+      /** The date of the reading `balance` came from. */
+      asOf: (b?.as_of as string | undefined) ?? null,
     }
   })
 
@@ -242,17 +244,29 @@ Deno.serve(async (req: Request) => {
   // interest accrued, or because the debt came into existence, and reporting
   // either as though somebody had gone shopping is simply wrong. An instalment
   // loan appearing at origination read as a fifty-thousand-dollar shopping trip.
+  //
+  // Once per READING, not once per day. The comparison is the latest reading
+  // against the one before it, and on a typed-in card the latest reading can
+  // stand for a month — so keyed on today's date, one rise entered on 16 Oct
+  // was announced again every single morning. Now it fires only while the
+  // reading is fresh (dated today or yesterday: a connected card reads every
+  // night, a typed-in one the day it is entered) and is keyed on that reading.
+  const yesterday = (() => {
+    const d = new Date(`${now.iso}T12:00:00Z`)
+    d.setUTCDate(d.getUTCDate() - 1)
+    return d.toISOString().slice(0, 10)
+  })()
   for (const a of withBalance) {
     if (a.kind !== 'card') continue
     if (target && a.id === target.id) continue
-    if (a.prev === null) continue
+    if (a.prev === null || !a.asOf || a.asOf < yesterday) continue
     const delta = a.balance - a.prev
     if (delta > 0.005) {
       alerts.push({
         type: 'balance_up',
         title: 'Balance rose',
         body: `${a.name} balance rose ${money(delta)} since the previous reading.`,
-        dedupe: `balance_up:${a.id}:${now.iso}`,
+        dedupe: `balance_up:${a.id}:${a.asOf}`,
       })
     }
   }
